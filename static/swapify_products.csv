@@ -1,0 +1,102 @@
+Serial No,Barcode,Product Name,Brand,Serving Size (g),Sugar per serving (g),Saturated fat per serving (g),Sodium per serving (mg),Protein per serving (g),Fiber per serving (g),Calories per serving (kcal)
+1,8908013479122,The whole truth food protein bar,The Whole Truth,52,0,4.9,13.8,13,4.4,258
+2,8906143890053,The whole truth food protein bar,The Whole Truth,35,1.2,3.4,24.5,9,2.5,228
+3,8904335602385,Yoga bar protein bar,Yoga Bar,50,21.5,1.2,160,10,5.2,200
+4,8906081120090,Happilo nut mixtures,Happilo,28,4,1.5,NULL,5,2.5,185
+5,8906067021182,MuscleBlaze chocolate whey protein,MuscleBlaze,35,0,1,100,25,0,120
+6,8906059635038,Epigamia blueberry greek yogurt,Epigamia,85,6.8,0.85,40,6,0,88
+7,946459636639,Epigamia turbo protein milkshake cookie and cream,Epigamia,250,3.2,0,NULL,25,0,141
+8,8908006217465,Slurrp farm ragi almond and banana cereals,Slurrp Farm,30,0,0,1.5,2.7,2,105
+9,8908002984590,Soulfull Ragabites choco,Tata Soulfull,100,22.6,0.8,212,10.8,9.2,392
+10,8908002984972,Soulfull millet museli,Tata Soulfull,100,14.8,1.6,185,8.8,8.7,400
+11,8901058005783,Maggi noodles,Maggi,75,1.5,6.8,750,6.2,2.5,288
+12,8901491503174,Lay's salted chips,Lay's,28,1,2.6,134,2,0.4,156
+13,0000901626026,Red Bull,Red Bull,258,11,NULL,41,0,NULL,45
+14,8901719113345,Parle G,Parle,15,3.8,1,44,1,0.2,68
+15,5060166693015,Monster,Monster Energy,500,55,0,380,0,0,237
+16,5449000053879,Diet Coke,The Coca Cola Company,330,0,0,40,0,0,1
+17,7622210622211,Five star chocolate,Five Star,21.5,11.3,3.2,43,0,0.2,116
+18,8904063220424,Takatak chips,Takatak,28,2,1,260,2,1,160
+19,8801062168279,Lotte chocopie,Lotte,25,9,3,55,1,0,108
+20,5000159461122,Snickers,Snickers,45,26,5,96,4,1.1,217
+21,8901262176224,Chocobar,Amul,44,9.2,7.7,50,1.7,0,145
+22,8901262200233,Amul chaas,Amul,200,5,2,120,3,0,60
+23,8904004400762,Haldiram aaloo bhujiya,Haldiram,35,0,3.5,230,2,7,230
+24,8909081000270,Dark fantasy chocofill cookie,Sunfeast,10,3.6,1.3,18,0.7,0,52
+25,7622201808044,Oreo biscuit,Oreo,22,8.1,3.1,38,3.1,0.6,106
+26,8901262150088,Amul tazza tetra milk packet,Amul,200,0,4,74,6,0,116
+27,8904004400298,Haldirams punjabi tadka namkeen,Haldiram,35,1,6,310,4,1,200
+28,8901262153348,Amul lassi,Amul,200,30,2.4,60,4,0,176
+29,8901499006936,Chocos cereal,Kelloggs,30,9,0.4,3,2.7,1.5,112
+30,8901063093089,Good day cashew biscuit,Britannia,20,4.8,2,65,1.2,0.2,97
+31,8902579100025,Frooti,Parle Agro,200,31.2,0,52,0,0,126
+32,8901030814944,Horlicks Classic Malt,Horlicks,27,13.2,0.5,62,4.7,0.6,102
+33,8906127540016,Farmley Datebites,Farmley,20,6.7,1.2,5,3.3,1.8,99
+34,8901764130222,PediaSure Vanilla,PediaSure,47,9.6,1.6,150,6.5,0,220
+35,8901063019073,Britannia Jim Jam,Britannia,35,11,3.5,75,2,0.5,170
+36,8901799130003,Kelloggs Corn Flakes,Kelloggs,30,2.4,0.1,215,2.4,0.3,113
+37,8901595862962,Chings Schezwan Chutney,Chings,15,0.5,0.3,296,0.3,0,22
+38,8901719110566,Parle Hide and Seek,Parle,25,8,2.5,80,1.5,1.1,121
+39,8901719100543,Parle Bourbon,Parle,25,10.4,1.9,26,1.3,0.5,117
+40,8901063019259,Britannia Marie Gold,Britannia,30,5.6,1.1,95,2,0.5,133
+41,8906009079165,Unibic Chocochip Cookies,Unibic,30,8.7,4,50,1.8,0.8,144
+42,8901030594684,Nestle Cerelac,Nestle,25,8,0.9,40,3.3,0.3,97
+43,8906073750019,Yogabar Choco Almond Muesli,Yogabar,50,12,1.5,35,7,3.1,215
+44,8901799101868,Kelloggs Fruit and Nut Muesli,Kelloggs,40,8.4,0.5,60,3.3,2.5,159
+45,8906120108126,Farmley Peri Peri Makhana,Farmley,25,1,0.5,120,2.2,0.5,119
+46,8906120108119,Farmley Sour and Cream Makhana,Farmley,25,0.7,0.5,130,2.2,0.5,118
+47,8901551101264,Sprite,Sprite,250,24.5,0,30,0,0,98
+48,8901063065049,Britannia Vanilla Milk,Britannia,200,18,1.5,100,5.6,0,156
+49,8901262126013,Amul Kool Badam Kesar,Amul,200,20,2,110,6,0,178
+50,8901551100113,Fanta Orange,Fanta,250,28,0,18,0,0,113
+51,7622300185954,Tang Orange Powder,Tang,36,32,0,55,0,0,140
+52,8901152009005,Rasna Orange Concentrate,Rasna,5,3.8,0,2,0,0,15
+53,8901396000025,Glucon D Regular,Glucon D,26,19.6,0,33,0,0,129
+54,8906024330025,Rooh Afza,Rooh Afza,30,23,0,15,0.2,0,90
+55,8901551100977,Limca,Limca,250,22.5,0,23,0,0,90
+56,8901030891830,Kwality Walls Cornetto Ice Cream,Kwality Walls,61,17.3,5.1,71,3.6,1.8,200
+57,8901262114027,Amul Orange Ice Bar,Amul,60,14,2.5,40,2,0,110
+58,8901777979105,Vadilal Gourmet Ice Cream,Vadilal,100,22,5.5,80,3.5,0.5,215
+59,8901396400210,ENO Regular Sachet,ENO,5,0,0,1080,0,0,15
+60,8908013982646,Lahori Jeera,Lahori Jeera,160,17,0,0,0,0,76
+61,89010207900631,Dabur Chyawanprash,Dabur,15,48,0,12,0.3,0.3,48
+62,4902102072182,Minute Maid Orange Pulp,Minute Maid,100,8.5,0,2,0.7,0.2,45
+63,4902010272199,Minute Maid Lemon Pulp,Minute Maid,100,3,0,2,0.3,0.1,20
+64,8901058900015,Real Fruit Guava Juice,B Natural,200,18,0,20,0.5,1.5,100
+65,8901058900022,Real Mixed Fruit Juice,B Natural,200,20,0,20,0.5,0.5,100
+66,8901058900309,Real Fruit Litchi Juice,B Natural,200,20,0,15,0.5,0,95
+67,890105890046,Real Pineapple Juice,B Natural,200,19,0,10,0.5,0.5,90
+68,890105890053,Real Apple Juice,B Natural,200,22,0,10,0.3,0.5,100
+69,8901058851018,Maaza Tetra Pack,Maaza,200,24,0,15,0,0,110
+70,8901058851025,Maaza Bottle,Maaza,250,30,0,19,0,0,138
+71,8901058000532,Coca Cola,Coca Cola,200,21,0,10,0,0,84
+72,8901058000549,Coca Cola,Coca Cola,500,52.5,0,25,0,0,210
+73,8901058001317,Sprite,Sprite,200,15,0,20,0,0,60
+74,8901058001324,Sprite,Sprite,500,37.5,0,50,0,0,150
+75,8901058001430,Fanta,Fanta,200,21,0,10,0,0,86
+76,8901058001447,Fanta,Fanta,500,52.5,0,25,0,0,215
+77,8901058003939,Mountain Dew,PepsiCo,200,22,0,35,0,0,90
+78,8901058003946,Mountain Dew,PepsiCo,500,55,0,88,0,0,225
+79,8901058001539,Thums Up,Coca Cola,200,22,0,10,0,0,88
+80,8901058001546,Thums Up,Coca Cola,500,55,0,25,0,0,220
+81,7622300441937,Cadbury Dairy Milk Chocolate,Cadbury,40,23,8,30,3,1,210
+82,7622300441951,Cadbury Fruit and Nut Chocolate,Cadbury,40,22,7.5,35,3.5,1.5,200
+83,7622300442026,Cadbury Oreo Chocolate,Cadbury,38,21,7,80,2.5,0.8,195
+84,7622300442033,Cadbury Sparkle Chocolate,Cadbury,36,20,7,40,2.5,0.5,190
+85,8901058570017,KitKat,Nestle,41.5,22,7.2,40,3,0.5,218
+86,8906068720018,Max Chocolate Protein Bar,Max Protein,67,9,2.5,150,20,5,240
+87,8901058560018,Nestle Chocolate Bar,Nestle,34,19,6.5,30,2.5,0.5,180
+88,8901058560025,Milkybar Chocolate,Nestle,27,16.5,5.5,45,2,0,145
+89,8901058560032,Fuse Chocolate Bar,Nestle,45,24,6,65,4.5,0.8,220
+90,8901058714018,Nescafe Latte,Nescafe,180,9,1.8,105,4.5,0,110
+91,8901058714025,Nescafe Intense Cafe,Nescafe,180,6,1.2,90,4,0,80
+92,8906123100011,The Whole Truth Peanut Butter Protein Bar,The Whole Truth,52,5,3,80,12,3,209
+93,8906123100028,The Whole Truth Cranberry Protein Bar,The Whole Truth,52,8,1.5,60,10,3.5,185
+94,8906123100035,The Whole Truth Coffee Cocoa Bar,The Whole Truth,52,6,3.5,70,11,3,200
+95,8906123100042,The Whole Truth Coconut Cocoa Bar,The Whole Truth,52,5.5,4,65,11,3,205
+96,8906097760011,True Elements Steel Cut Oats,True Elements,40,0.5,0.3,5,5,4,148
+97,8901058232018,Saffola Masala Oats,Saffola,40,2.5,0.5,380,4.5,3.5,158
+98,8906097760028,True Elements Nuts Protein Bar,True Elements,40,6,2,50,6,2.5,175
+99,8906097760035,True Elements Antioxidant Mix,True Elements,30,8,1,10,3.5,2,140
+100,8906097760042,True Elements Overnight Oats,True Elements,50,4,0.5,80,6.5,5,185
+101,8901088101018,MTR Upma Mix,MTR,80,2,0.5,620,6,2,290
