@@ -295,6 +295,41 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # ------------------------------------------------------------------------------
+# Error tracking (Task 2) — Sentry
+# ------------------------------------------------------------------------------
+# No-ops entirely unless SENTRY_DSN is set, so local dev and the test suite are
+# unaffected and the app still boots if sentry-sdk isn't installed. See
+# observability.py for what context is attached and what is scrubbed.
+try:
+    from observability import (init_sentry, install_request_context,
+                               capture_message as obs_capture_message)
+except ImportError:  # running as a package (src.app) rather than from src/
+    from .observability import (init_sentry, install_request_context,
+                                capture_message as obs_capture_message)
+
+
+def _user_id_from_auth_header(auth_header):
+    """Best-effort user id from a Bearer token, for Sentry's user context.
+
+    Deliberately silent: a bad or absent token means an anonymous event, never an
+    error — error tracking must not be able to generate errors.
+    """
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return None
+    try:
+        payload = jwt.decode(auth_header.split(None, 1)[1], SECRET_KEY,
+                             algorithms=[ALGORITHM])
+        return payload.get("user_id")
+    except Exception:
+        return None
+
+
+SENTRY_ENABLED = init_sentry()
+# Installed unconditionally: even with Sentry off it assigns the X-Request-ID that
+# ties a user's bug report to a line in the logs.
+install_request_context(app, _user_id_from_auth_header)
+
+# ------------------------------------------------------------------------------
 # Product images (Task 2)
 # ------------------------------------------------------------------------------
 # Uploaded product images are stored on disk under ``server/uploads/product_images``
@@ -354,10 +389,37 @@ PRODUCT_CACHE_TTL = 3600  # 1 hour
 _product_cache = TTLCache(maxsize=512, ttl=PRODUCT_CACHE_TTL)
 _popular_cache = TTLCache(maxsize=8, ttl=PRODUCT_CACHE_TTL)
 
+# Hit/miss counters. Without these "is the cache working?" is unanswerable from the
+# outside: a cache that never hits and a cache that always hits look identical from
+# a response body, and a warm endpoint being fast proves nothing on its own. Exposed
+# via GET /cache-stats. Plain ints — the GIL makes += safe enough for a counter whose
+# exact value under a race does not matter.
+_cache_stats = {"product_hits": 0, "product_misses": 0,
+                "popular_hits": 0, "popular_misses": 0,
+                "leaderboard_hits": 0, "leaderboard_misses": 0,
+                "invalidations": 0}
+
+# The leaderboard is the most expensive read in the API (~28ms server-side): ranking
+# users means a weighted aggregate over user_activity, and then resolving each user's
+# badges, which evaluates live challenge progress per user. Batching the SQL only goes
+# so far — the badge evaluation is a nested N+1 inside the challenge logic.
+#
+# But a leaderboard is an aggregate that changes slowly and is read far more often than
+# it changes, so it is a textbook cache. A short TTL keeps it honest: at 60s the board
+# is never more than a minute stale, which is invisible to a user and turns the endpoint
+# from ~28ms into a dict lookup. Keyed by (period, limit) — a small, bounded key space.
+LEADERBOARD_CACHE_TTL = 60  # seconds
+_leaderboard_cache = TTLCache(maxsize=32, ttl=LEADERBOARD_CACHE_TTL)
+
 
 def cache_get_product(barcode):
     """Return a cached generic scored product for ``barcode`` (or None)."""
-    return _product_cache.get(barcode)
+    hit = _product_cache.get(barcode)
+    if hit is None:
+        _cache_stats["product_misses"] += 1
+    else:
+        _cache_stats["product_hits"] += 1
+    return hit
 
 
 def cache_set_product(barcode, payload):
@@ -374,6 +436,52 @@ def invalidate_product_cache(barcode=None):
     else:
         _product_cache.pop(barcode, None)
     _popular_cache.clear()
+    _cache_stats["invalidations"] += 1
+
+
+def _hit_rate(hits, misses):
+    total = hits + misses
+    return round(hits / total, 4) if total else None
+
+
+@app.get("/cache-stats")
+def cache_stats():
+    """Cache hit/miss counters — the evidence that caching is actually working.
+
+    ``hit_rate`` is None until the cache has been asked for something; a rate that
+    stays near zero under repeat traffic means entries are being evicted or
+    invalidated faster than they are reused, which is a cache that costs memory and
+    buys nothing. Counters are per-worker and reset on restart, so read them from a
+    single worker (or expect them to differ between them).
+    """
+    s = _cache_stats
+    return {
+        "product_cache": {
+            "hits": s["product_hits"],
+            "misses": s["product_misses"],
+            "hit_rate": _hit_rate(s["product_hits"], s["product_misses"]),
+            "entries": len(_product_cache),
+            "maxsize": _product_cache.maxsize,
+        },
+        "popular_cache": {
+            "hits": s["popular_hits"],
+            "misses": s["popular_misses"],
+            "hit_rate": _hit_rate(s["popular_hits"], s["popular_misses"]),
+            "entries": len(_popular_cache),
+            "maxsize": _popular_cache.maxsize,
+        },
+        "leaderboard_cache": {
+            "hits": s["leaderboard_hits"],
+            "misses": s["leaderboard_misses"],
+            "hit_rate": _hit_rate(s["leaderboard_hits"], s["leaderboard_misses"]),
+            "entries": len(_leaderboard_cache),
+            "maxsize": _leaderboard_cache.maxsize,
+            "ttl_seconds": LEADERBOARD_CACHE_TTL,
+        },
+        "invalidations": s["invalidations"],
+        "ttl_seconds": PRODUCT_CACHE_TTL,
+        "pid": os.getpid(),
+    }
 
 
 # ------------------------------------------------------------------------------
@@ -650,6 +758,16 @@ def generic_scored_product(barcode: str):
 BARCODE_FORMATS = {8: "EAN-8", 12: "UPC-A", 13: "EAN-13"}
 
 
+def normalize_barcode(barcode) -> str:
+    """Strip the separators a barcode is never stored with (spaces, hyphens).
+
+    A scanner emits bare digits, so a stored barcode carrying a space can never be
+    matched by a scan — the CSV's Red Bull row ('0000 901626026') was exactly this.
+    Normalising on the way in keeps the key in the form a scan will actually arrive in.
+    """
+    return re.sub(r"[\s\-]", "", ("" if barcode is None else str(barcode)).strip())
+
+
 def gs1_check_digit(payload: str) -> int:
     """Return the GS1 modulo-10 check digit for ``payload`` (all data digits,
     without the check digit). Rightmost data digit is weighted x3, then x1, ..."""
@@ -734,6 +852,32 @@ def validate_barcode(barcode: str) -> dict:
     return result
 
 
+def lookup_by_gs1_payload(cursor, barcode: str):
+    """Find a product by its GS1 payload, ignoring the check digit. None if no match.
+
+    A scanner verifies the check digit before it emits anything, so it can only ever
+    hand us a *valid* barcode. Much of the catalogue was transcribed by hand from the
+    physical packs, and 47 of those rows carry a check digit that does not match their
+    payload — a code no scanner will ever produce. On an exact match alone those
+    products are permanently unscannable.
+
+    Everything before the check digit is the GS1 item number, which identifies the
+    product on its own (the check digit is *derived* from it, carrying no identity).
+    So matching on the payload recovers the row without guessing at a correction, and
+    it cannot mismatch: one payload belongs to exactly one item. A transcription error
+    in the payload itself still misses, which is the honest outcome — the fix for that
+    is re-scanning the pack, not inventing a barcode here.
+    """
+    cleaned = normalize_barcode(barcode)
+    if not cleaned.isdigit() or len(cleaned) not in BARCODE_FORMATS:
+        return None
+    cursor.execute(
+        "SELECT * FROM products WHERE length(barcode) = ? AND substr(barcode, 1, ?) = ?",
+        (len(cleaned), len(cleaned) - 1, cleaned[:-1]),
+    )
+    return cursor.fetchone()
+
+
 @app.get("/validate-barcode/{barcode}")
 def validate_barcode_endpoint(barcode: str):
     """Validate a barcode and, if invalid, return a suggested correction."""
@@ -752,6 +896,16 @@ def get_product(barcode: str, device_id: Optional[str] = None,
 
     cursor.execute("SELECT * FROM products WHERE barcode = ?", (barcode,))
     row = cursor.fetchone()
+
+    # The scan we were handed is check-digit-valid by construction, but the row it
+    # belongs to may have been transcribed with a bad one. Retry on the GS1 payload,
+    # then continue under the *stored* barcode so history, scoring and the cache all
+    # key off one canonical value.
+    scanned_barcode = barcode
+    if row is None:
+        row = lookup_by_gs1_payload(cursor, barcode)
+        if row is not None:
+            barcode = row["barcode"]
 
     if row and (device_id or user_id):
         cursor.execute(
@@ -799,6 +953,19 @@ def get_product(barcode: str, device_id: Optional[str] = None,
         p_dict['image_url'] = image_or_placeholder(p_dict.get('image_url'))
         if not validation["valid"]:
             p_dict['barcode_validation'] = validation
+        if scanned_barcode != barcode:
+            # Resolved on the GS1 payload, not an exact hit — say so, so a bad
+            # stored check digit shows up in testing instead of passing silently.
+            p_dict['barcode_matched_on'] = {
+                "scanned": scanned_barcode,
+                "stored": barcode,
+                "reason": "check_digit_mismatch",
+                "detail": (
+                    "The stored barcode's check digit does not match its GS1 payload; "
+                    "matched on the payload. The stored value needs re-verifying "
+                    "against the physical pack."
+                ),
+            }
         return p_dict
 
     # Fallback: fetch & score from Open Food Facts when not in the local DB.
@@ -2118,6 +2285,10 @@ def health_check():
         "server_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "database": db_status,
         "products_loaded": product_count,
+        # Whether error tracking is actually live in this environment. A deploy that
+        # forgets SENTRY_DSN looks completely healthy otherwise — the errors just go
+        # nowhere, which you'd only discover when you needed them.
+        "error_tracking": "sentry" if SENTRY_ENABLED else "disabled",
         "pid": os.getpid(),
     }
 
@@ -3335,8 +3506,11 @@ def get_popular_products_cached(limit=10):
     key = "popular_top_100"
     cached = _popular_cache.get(key)
     if cached is None:
+        _cache_stats["popular_misses"] += 1
         cached = get_popular_products(limit=100)
         _popular_cache[key] = cached
+    else:
+        _cache_stats["popular_hits"] += 1
     return cached[:limit]
 
 
@@ -4377,6 +4551,20 @@ def ensure_performance_and_image_schema():
             CREATE INDEX IF NOT EXISTS idx_products_name_brand   ON products(product_name, brand);
         ''')
 
+        # --- Migration 007: index the tables that actually GROW.
+        # The indexes above cover `products`, which is bounded (~100 rows from a CSV).
+        # `scan_history` gains a row on every scan, forever, and had no index at all:
+        # /history scanned the whole table and sorted it in a temp B-tree, and the
+        # popularity join behind /home-feed made SQLite rebuild an AUTOMATIC COVERING
+        # INDEX on it *per request*. At 200k rows that is 18.7ms -> 0.35ms for
+        # /history and 260ms -> 27ms for the popularity query.
+        cur.executescript('''
+            CREATE INDEX IF NOT EXISTS idx_scan_history_user_time ON scan_history(user_id, scanned_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_scan_history_barcode   ON scan_history(barcode);
+            CREATE INDEX IF NOT EXISTS idx_scan_history_device    ON scan_history(device_id);
+            CREATE INDEX IF NOT EXISTS idx_favorites_user         ON favorites(user_id);
+        ''')
+
         # --- Task 2C: crowdsourced image upload records
         cur.execute('''
             CREATE TABLE IF NOT EXISTS product_images (
@@ -4704,6 +4892,15 @@ def get_leaderboard(period: str = "weekly", limit: int = 10):
         )
     limit = max(1, min(limit, 100))
 
+    # Served from cache when warm. Read *after* validation so an invalid `period`
+    # still raises its 400 rather than being answered from (or written to) the cache.
+    cache_key = (period, limit)
+    cached = _leaderboard_cache.get(cache_key)
+    if cached is not None:
+        _cache_stats["leaderboard_hits"] += 1
+        return cached
+    _cache_stats["leaderboard_misses"] += 1
+
     where = "WHERE ua.user_id IS NOT NULL"
     params = []
     if period != "all-time":
@@ -4731,16 +4928,32 @@ def get_leaderboard(period: str = "weekly", limit: int = 10):
     rows = [dict(r) for r in cur.fetchall()]
 
     # Per-user action breakdown for the users on the board (for a richer card).
+    #
+    # Fetched for every user on the board in ONE grouped query rather than one query
+    # per user. The old loop was an N+1: at the default limit=10 it issued 10 extra
+    # round-trips to build the same numbers, which is why /leaderboard was ~10x
+    # slower than any other endpoint.
+    uids = [r["user_id"] for r in rows]
+    breakdowns = {uid: {} for uid in uids}
+    if uids:
+        placeholders = ", ".join("?" * len(uids))
+        bd_where = f"WHERE user_id IN ({placeholders})"
+        bd_params = list(uids)
+        if period != "all-time":
+            bd_where += " AND datetime(created_at) >= datetime(?)"
+            bd_params.append(_utc_since(PERIOD_DAYS[period]))
+        cur.execute(
+            "SELECT user_id, action_type, COUNT(*) AS n FROM user_activity "
+            f"{bd_where} GROUP BY user_id, action_type",
+            bd_params,
+        )
+        for r2 in cur.fetchall():
+            breakdowns[r2["user_id"]][r2["action_type"]] = r2["n"]
+
     leaderboard = []
     for i, r in enumerate(rows):
         uid = r["user_id"]
-        cur.execute(
-            "SELECT action_type, COUNT(*) AS n FROM user_activity "
-            f"WHERE user_id = ?{' AND datetime(created_at) >= datetime(?)' if period != 'all-time' else ''} "
-            "GROUP BY action_type",
-            ((uid, _utc_since(PERIOD_DAYS[period])) if period != "all-time" else (uid,)),
-        )
-        breakdown = {r2["action_type"]: r2["n"] for r2 in cur.fetchall()}
+        breakdown = breakdowns.get(uid, {})
         badges = get_user_badges(uid)
         leaderboard.append({
             "rank": i + 1,
@@ -4754,12 +4967,14 @@ def get_leaderboard(period: str = "weekly", limit: int = 10):
         })
     conn.close()
 
-    return {
+    payload = {
         "period": period,
         "count": len(leaderboard),
         "scoring": ACTIVITY_POINTS,
         "leaderboard": leaderboard,
     }
+    _leaderboard_cache[cache_key] = payload
+    return payload
 
 
 # ==============================================================================
@@ -5687,6 +5902,54 @@ def get_experiment_logs(
     }
 
 
+@app.post("/admin/cache-clear")
+def admin_cache_clear(admin: dict = Depends(require_admin)):
+    """Drop every cache entry. **Admin-gated.**
+
+    Ops lever for when a product changes outside the app (a direct DB edit, a
+    ``sync_db.py`` run) and the hour-long TTL would otherwise serve stale data until
+    it expires. Also what ``perf_endpoints.py`` calls to force a genuinely cold cache
+    before measuring cold-vs-warm — without it, "cold" is a guess.
+    """
+    products = len(_product_cache)
+    popular = len(_popular_cache)
+    board = len(_leaderboard_cache)
+    invalidate_product_cache()
+    _leaderboard_cache.clear()
+    return {"message": "Caches cleared",
+            "cleared": {"product_cache": products, "popular_cache": popular,
+                        "leaderboard_cache": board}}
+
+
+@app.post("/debug/sentry-test")
+def sentry_test(kind: str = "exception", admin: dict = Depends(require_admin)):
+    """Deliberately raise (or message) to prove error tracking is wired up.
+
+    **Admin-gated.** It is a real, uncaught 500 by design — that is the point, it
+    exercises the exact path a genuine bug takes — so it must not be reachable by
+    anyone who wanders past.
+
+    ``kind=exception`` (default) raises; ``kind=message`` sends a non-error event.
+    Returns 503 rather than faking success when Sentry is off, so a green result
+    here always means an event genuinely left the process.
+    """
+    if not SENTRY_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Sentry is not enabled (SENTRY_DSN unset) - nothing would be sent.",
+        )
+
+    if kind == "message":
+        obs_capture_message("Swapify test message from /debug/sentry-test",
+                            level="info", source="debug_endpoint")
+        return {"sent": "message", "environment": os.environ.get("SENTRY_ENVIRONMENT")}
+
+    raise RuntimeError(
+        "Swapify test exception from /debug/sentry-test - if you can read this in "
+        "Sentry, error tracking works."
+    )
+
+
 @app.get("/experiment/analytics")
 def get_experiment_analytics(
         start_date: Optional[str] = None,
@@ -5777,29 +6040,19 @@ def _seed_products_from_csv(cursor):
         for row in reader:
             if not row or len(row) < 11:
                 continue
-            try:
-                serial_no = int((row[0] or "0").strip())
-            except ValueError:
-                serial_no = 0
-            barcode = row[1].strip()
+            barcode = normalize_barcode(row[1])
+            if not barcode:
+                continue
             product_name = row[2].strip()
             brand = row[3].strip()
 
-            # Keep the Lay's sample aligned with the documented test barcode.
-            if serial_no == 2:
-                barcode = "8901491101837"
-                product_name = "Lay's Classic Salted"
-                brand = "Lay's"
-                serving, sugar, sat_fat = 28.0, 0.3, 1.8
-                sodium, protein, fiber, calories = 370.0, 2.0, 1.0, 150.0
-            else:
-                serving = _csv_num(row[4])
-                sugar = _csv_num(row[5])
-                sat_fat = _csv_num(row[6])
-                sodium = _csv_num(row[7])
-                protein = _csv_num(row[8])
-                fiber = _csv_num(row[9])
-                calories = _csv_num(row[10])
+            serving = _csv_num(row[4])
+            sugar = _csv_num(row[5])
+            sat_fat = _csv_num(row[6])
+            sodium = _csv_num(row[7])
+            protein = _csv_num(row[8])
+            fiber = _csv_num(row[9])
+            calories = _csv_num(row[10])
 
             cursor.execute(
                 "INSERT OR IGNORE INTO products (barcode, product_name, brand, "
