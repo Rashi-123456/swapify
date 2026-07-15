@@ -430,6 +430,26 @@ var currentUser=null;
 function loadAuth(){ try{currentUser=JSON.parse(localStorage.getItem(AUTH_KEY)||'null');}catch(e){currentUser=null;} renderHeaderAuth(); }
 function saveAuth(user){ currentUser=user; localStorage.setItem(AUTH_KEY,JSON.stringify(user)); renderHeaderAuth(); }
 function clearAuth(){ currentUser=null; localStorage.removeItem(AUTH_KEY); renderHeaderAuth(); }
+
+// Call this right after any authenticated fetch(). Returns true if the
+// session had expired (401) and has now been cleaned up — callers should
+// stop and treat the action as not completed. This is the fix for bug
+// reports like "Invalid token" popping up when joining a challenge, rating,
+// or reviewing: those all share one root cause (a stale token still stored
+// locally), so it's handled once, here, instead of separately in each place.
+var _sessionExpiredNotified = false;
+function handleAuthExpiry(res){
+  if(!res || res.status !== 401) return false;
+  var wasLoggedIn = isReallyLoggedIn();
+  clearAuth();
+  if(wasLoggedIn && !_sessionExpiredNotified){
+    _sessionExpiredNotified = true;
+    setTimeout(function(){ _sessionExpiredNotified = false; }, 3000); // avoid stacking alerts from parallel requests
+    alert('Your session has expired. Please log in again.');
+    openAuthModal();
+  }
+  return true;
+}
 function renderHeaderAuth(){
   var area=document.getElementById('headerAuthArea');
   if(currentUser){
@@ -692,11 +712,12 @@ function completeOnboarding(save){
 async function syncPreferencesToBackend(){
   if(!currentUser||!currentUser.token) return;
   try{
-    await fetch(PREFS_URL,{
+    var res=await fetch(PREFS_URL,{
       method:'POST',
       headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
       body:JSON.stringify(userPrefs)
     });
+    if(!res.ok) handleAuthExpiry(res);
   }catch(e){ /* offline/unreachable backend — local prefs still apply */ }
 }
 
@@ -3124,12 +3145,27 @@ function buildRatingSectionHTML(barcode,productName){
       +'<div class="rating-avg-item"><div class="rating-avg-label">\uD83C\uDFC6 Quality</div><div class="rating-stars-display">'+starsDisplayHTML(stats.quality)+'</div><div class="rating-avg-num">'+stats.quality.toFixed(1)+'</div></div>'
       +'<div class="rating-avg-item"><div class="rating-avg-label">\uD83D\uDCB0 Value</div><div class="rating-stars-display">'+starsDisplayHTML(stats.value)+'</div><div class="rating-avg-num">'+stats.value.toFixed(1)+'</div></div>'
       +'</div>'
-      +'<div class="rating-count-note">Based on '+stats.count+' rating'+(stats.count>1?'s':'')+'</div>';
+      +'<div class="rating-count-note">Based on '+stats.count+' rating'+(stats.count>1?'s':'')+' (community average)</div>';
   }
+  // Bug fix: "your rating" was never shown anywhere — only the pooled
+  // community average. Surface it separately, above the average, whenever
+  // this browser has a saved rating for this product.
+  var mine=loadMyOwnRatings()[barcode];
+  var mineHTML=mine
+    ? '<div class="rating-mine-row">'
+      +'<div class="rating-mine-label">\u2B50 Your Rating</div>'
+      +'<div class="rating-avg-grid">'
+        +'<div class="rating-avg-item"><div class="rating-avg-label">\uD83D\uDE0B Taste</div><div class="rating-stars-display">'+starsDisplayHTML(mine.taste)+'</div></div>'
+        +'<div class="rating-avg-item"><div class="rating-avg-label">\uD83C\uDFC6 Quality</div><div class="rating-stars-display">'+starsDisplayHTML(mine.quality)+'</div></div>'
+        +'<div class="rating-avg-item"><div class="rating-avg-label">\uD83D\uDCB0 Value</div><div class="rating-stars-display">'+starsDisplayHTML(mine.value)+'</div></div>'
+      +'</div>'
+      +'</div>'
+    : '';
   var safeName=(productName||'').replace(/'/g,"\\'");
   return '<div class="rating-section-card" id="ratingSectionCard-'+barcode+'">'
     +'<div class="rating-section-header"><div class="rating-section-title">\u2B50 Community Ratings</div>'
     +'<button class="btn-rate-product" onclick="openRatingModal(\''+barcode+'\',\''+safeName+'\')">\u270D Rate This Product</button></div>'
+    +mineHTML
     +body
     +'</div>';
 }
@@ -3216,6 +3252,7 @@ async function submitProductRating(){
       await refreshRatingSectionFromBackend(barcode,(lastScannedProduct&&lastScannedProduct.data&&lastScannedProduct.data.product_name)||_ratingModalName);
       return;
     }
+    handleAuthExpiry(res); // if the token had expired, log out cleanly and say so once
   }catch(e){ /* backend unreachable — local rating already saved below */ }
 
   // Backend call failed/unreachable: at least refresh the card from local data.
@@ -3820,6 +3857,7 @@ async function joinChallenge(id){
       headers:getAuthHeaders()
     });
     if(!res.ok){
+      if(handleAuthExpiry(res)) return;
       var err=await res.json().catch(function(){return{};});
       alert(err.detail||'Could not join that challenge.');
       return;
@@ -4289,6 +4327,7 @@ async function deleteReview(barcode,id){
   try{
     var res=await fetch(REVIEWS_URL+'/'+id,{method:'DELETE',headers:getAuthHeaders()});
     if(!res.ok){
+      if(handleAuthExpiry(res)) return;
       var err=await res.json().catch(function(){return{};});
       alert(err.detail||'Could not delete that review.');
       return;
@@ -4321,10 +4360,9 @@ async function submitReview(){
       body:JSON.stringify({barcode:barcode,rating:_reviewDraftStars,review_text:text})
     });
     if(!res.ok){
+      if(handleAuthExpiry(res)) return; // modal stays open, draft preserved
       var err=await res.json().catch(function(){return{};});
-      var msg=err.detail||'Could not submit that review.';
-      if(res.status===401) msg='Your session has expired — please log in again and resubmit your review.';
-      alert(msg);
+      alert(err.detail||'Could not submit that review.');
       return; // modal stays open with the user's text intact so nothing is lost
     }
   }catch(e){
@@ -4340,11 +4378,12 @@ async function submitReview(){
 async function voteReview(barcode,id,vote){
   if(!isReallyLoggedIn()){ alert('Please log in to vote on a review.'); openAuthModal(); return; }
   try{
-    await fetch(REVIEWS_URL+'/'+id+'/vote',{
+    var res=await fetch(REVIEWS_URL+'/'+id+'/vote',{
       method:'POST',
       headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
       body:JSON.stringify({vote:vote})
     });
+    if(!res.ok && handleAuthExpiry(res)) return;
   }catch(e){ /* ignore — refresh below will just show unchanged counts */ }
   refreshReviewsSection(barcode);
 }
@@ -4360,6 +4399,7 @@ async function replyToReview(barcode,id){
       body:JSON.stringify({reply_text:text})
     });
     if(!res.ok){
+      if(handleAuthExpiry(res)) return;
       var err=await res.json().catch(function(){return{};});
       alert(err.detail||'Could not post that reply.');
     }

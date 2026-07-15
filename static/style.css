@@ -910,6 +910,8 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
 .rating-stars-display .star-empty{color:var(--border);}
 .rating-avg-num{font-family:'Poppins',sans-serif;font-weight:800;font-size:0.86rem;color:var(--text);margin-top:3px;}
 .rating-count-note{text-align:center;font-family:'DM Mono',monospace;font-size:0.68rem;color:var(--text-muted);margin-top:10px;}
+.rating-mine-row{background:rgba(198,241,53,0.10);border:1.5px solid var(--lime-dark);border-radius:var(--radius-sm);padding:12px;margin-bottom:14px;}
+.rating-mine-label{font-family:'Poppins',sans-serif;font-weight:700;font-size:0.78rem;color:var(--text);margin-bottom:8px;}
 .rating-none-yet{text-align:center;padding:10px;font-family:'DM Mono',monospace;font-size:0.78rem;color:var(--text-muted);}
 .rating-modal-box{max-width:380px;}
 .rating-modal-product-name{font-family:'Poppins',sans-serif;font-weight:700;font-size:0.9rem;text-align:center;color:var(--text);margin-bottom:16px;}
