@@ -16,19 +16,10 @@
 // 'https://swapify-backend.onrender.com'). Every API call in this file is
 // built from BACKEND_BASE_URL below, so this is the ONLY line that needs to
 // change to point the whole app at the live backend.
+// ✅ Updated — backend is now live on Render (see API_DOCS.md).
 const BACKEND_OVERRIDE_URL = 'https://swapify-3.onrender.com';
 
 const BACKEND_BASE_URL = BACKEND_OVERRIDE_URL || window.location.origin;
-
-// ── TASK 3 (Dhruv's logging endpoint) ───────────────────
-// Device info + scan events are sent to this path off BACKEND_BASE_URL.
-// Defaults to the existing `/activity` activity-logging endpoint
-// (action_type:'scan', metadata: device info) documented in API_DOCS.md,
-// so logging works out of the box. If Dhruv ships a dedicated endpoint
-// for this experiment, just change the path below — nothing else in the
-// app needs to change.
-const LOGGING_ENDPOINT_PATH = '/activity';
-const LOGGING_URL = BACKEND_BASE_URL + LOGGING_ENDPOINT_PATH;
 
 // The backend returns some URLs (e.g. product images, placeholders) as
 // root-relative paths like "/product-images/_placeholder.svg". Those are
@@ -547,11 +538,15 @@ function loadHistory(){ try{return JSON.parse(localStorage.getItem(HISTORY_KEY)|
 var LIFETIME_SCANS_KEY='swapify-lifetime-scans-v1';
 function loadLifetimeScanCount(){ var v=parseInt(localStorage.getItem(LIFETIME_SCANS_KEY)||'0',10); return isNaN(v)?0:v; }
 function bumpLifetimeScanCount(){ var v=loadLifetimeScanCount()+1; localStorage.setItem(LIFETIME_SCANS_KEY,String(v)); return v; }
-// NOTE: the 50-item cap below is intentional (keeps localStorage small and
-// keeps "recent scans" lists fast) but it means loadHistory().length is NOT
-// a true lifetime total once a user passes 50 scans. bumpLifetimeScanCount()
-// above tracks the real all-time count separately for stats that need it.
-function addToHistory(entry){ var h=loadHistory(); h.unshift(entry); if(h.length>50) h=h.slice(0,50); localStorage.setItem(HISTORY_KEY,JSON.stringify(h)); bumpLifetimeScanCount(); }
+// The cap below used to be 50, which could silently undercount the Weekly/
+// Monthly reports for active users: those panels filter this SAME array by
+// date, so once more than 50 scans happened (even within one month), older
+// entries from that same period were evicted and vanished from the monthly
+// total — while Profile's "All-Time Scans" (bumpLifetimeScanCount, below)
+// kept counting correctly, making the numbers look mismatched/buggy. Raised
+// to 500 so a realistic month/week of scanning is never evicted; localStorage
+// easily holds this many small entries.
+function addToHistory(entry){ var h=loadHistory(); h.unshift(entry); if(h.length>500) h=h.slice(0,500); localStorage.setItem(HISTORY_KEY,JSON.stringify(h)); bumpLifetimeScanCount(); }
 function calcDashboardStats(){
   var h=loadHistory();
   // "total" is the true lifetime scan count (not capped at 50); avg/streak
@@ -712,7 +707,9 @@ function openShareModal(prod){
   var p=prod.data,r=prod.result;
   document.getElementById('sc-name').textContent=p.product_name||'Unknown Product';
   document.getElementById('sc-brand').textContent=p.brand||p.brands||'';
-  document.getElementById('sc-score').textContent=r.score;
+  document.getElementById('sc-grade').textContent=r.grade;
+  document.getElementById('sc-score').textContent=r.score+'/10';
+  document.getElementById('sc-score-big').textContent='Score: '+r.score+'/10';
   document.getElementById('sc-grade-label').textContent='Grade '+r.grade;
   document.getElementById('sc-badge').className='share-card-badge '+r.gradeClass;
   document.getElementById('sc-warnings').innerHTML=r.flags.map(function(f){return'<span class="'+(f.c==='tag-green'?'share-card-warn-good':'share-card-warn-tag')+'">'+f.t+'</span>';}).join('');
@@ -1315,96 +1312,6 @@ function searchCategory(cat,excludeBarcode,minScore){
    SCAN PRODUCT
    ══════════════════════════════════════════════════════ */
 inputEl.addEventListener('keydown',function(e){if(e.key==='Enter')scanProduct();});
-/* ══════════════════════════════════════════════════════
-   TASK 3 — DEVICE INFO CAPTURE & LOGGING
-   Captures basic, non-invasive device/browser info from the browser
-   and sends it to the backend alongside each scan, for Dhruv's
-   real-world experiment logging. Never blocks or breaks a scan:
-   every step here is wrapped so a logging failure is invisible
-   to the user.
-   ══════════════════════════════════════════════════════ */
-function getDeviceInfo(){
-  try{
-    var ua=navigator.userAgent||'';
-
-    // Device type
-    var deviceType='desktop';
-    if(/iPad|Tablet(?!.*Mobile)|Nexus 7|Nexus 10|KFAPWI/i.test(ua)) deviceType='tablet';
-    else if(/Mobi|Android(?=.*Mobile)|iPhone|iPod|Windows Phone/i.test(ua)) deviceType='mobile';
-
-    // Operating system
-    var os='Unknown';
-    if(/Windows NT 10/i.test(ua)) os='Windows 10/11';
-    else if(/Windows NT/i.test(ua)) os='Windows';
-    else if(/iPhone|iPad|iPod/i.test(ua)) os='iOS';
-    else if(/Mac OS X/i.test(ua)) os='macOS';
-    else if(/Android/i.test(ua)) os='Android';
-    else if(/Linux/i.test(ua)) os='Linux';
-
-    // Browser name + version (order matters — Edge/Opera also match Chrome/Safari)
-    var browser='Unknown',version='';
-    var patterns=[
-      ['Edg','Edge'],['OPR','Opera'],['Chrome','Chrome'],
-      ['CriOS','Chrome (iOS)'],['FxiOS','Firefox (iOS)'],
-      ['Firefox','Firefox'],['Safari','Safari']
-    ];
-    for(var i=0;i<patterns.length;i++){
-      var token=patterns[i][0];
-      if(ua.indexOf(token)!==-1){
-        browser=patterns[i][1];
-        var m=ua.match(new RegExp(token+'\\/([\\d.]+)'));
-        version=m?m[1]:'';
-        break;
-      }
-    }
-    // Safari's real version is reported separately from the WebKit token
-    if(browser==='Safari'){
-      var vm=ua.match(/Version\/([\d.]+)/);
-      if(vm) version=vm[1];
-    }
-
-    return{
-      device_type:deviceType,
-      os:os,
-      browser:browser,
-      browser_version:version,
-      screen_width:(window.screen&&window.screen.width)||null,
-      screen_height:(window.screen&&window.screen.height)||null,
-      viewport_width:window.innerWidth||null,
-      viewport_height:window.innerHeight||null,
-      pixel_ratio:window.devicePixelRatio||1,
-      user_agent:ua,
-      language:navigator.language||'',
-      theme:document.documentElement.getAttribute('data-theme')||'light'
-    };
-  }catch(e){
-    // Even device-info capture itself must never break a scan.
-    return{device_type:'unknown'};
-  }
-}
-
-// Fire-and-forget: sends the barcode + device info to the logging
-// endpoint. Deliberately not awaited by callers, and every failure
-// (network down, endpoint missing, CORS, timeout) is swallowed here
-// so a logging outage can never prevent or slow down a product scan.
-function logScanEvent(barcode){
-  try{
-    var payload={
-      action_type:'scan',
-      barcode:barcode,
-      metadata:{device:getDeviceInfo(),logged_at:new Date().toISOString()}
-    };
-    var headers=Object.assign({'Content-Type':'application/json'},getAuthHeaders?getAuthHeaders():{});
-    fetch(LOGGING_URL,{
-      method:'POST',
-      headers:headers,
-      body:JSON.stringify(payload)
-    }).catch(function(){/* silent — logging must never surface to the user */});
-  }catch(e){
-    // Swallow synchronous errors too (e.g. JSON.stringify on a weird value).
-  }
-}
-
 function quickScan(c){inputEl.value=c;scanProduct();}
 
 async function scanProduct() {
@@ -1429,6 +1336,11 @@ async function scanProduct() {
         return;
     }
 
+    // Task 3 — log this scan attempt with device info for Dhruv's experiments.
+    // Fire-and-forget: not awaited, wrapped so a logging failure can never
+    // interrupt or break the actual product scan below.
+    logScanEvent(barcode, { event: 'scan_attempt' });
+
     resultEl.className = "visible";
     resultEl.innerHTML = '<div class="loading-spinner">Scanning…</div>';
 
@@ -1442,10 +1354,7 @@ async function scanProduct() {
 
         lastScannedProduct = prod;
 
-        // Task 3B: log this scan's barcode + device info for Dhruv's
-        // real-world experiments. Not awaited on purpose — the scan
-        // result renders immediately regardless of logging outcome.
-        logScanEvent(prod.barcode || barcode);
+        logScanEvent(barcode, { event: 'scan_result', outcome: 'found', source: prod.type || 'swapify', score: prod.result ? prod.result.score : null });
 
         addToHistory({
             barcode: prod.barcode,
@@ -1473,11 +1382,132 @@ await loadAlternatives(prod);
         // a distinct message so the user isn't told a real product is missing
         // when the real problem is connectivity.
         if (isNetworkError(e)) {
+            logScanEvent(barcode, { event: 'scan_result', outcome: 'network_error' });
             showNetworkError(barcode);
         } else {
+            logScanEvent(barcode, { event: 'scan_result', outcome: 'not_found' });
             showProductNotFound(barcode);
         }
 
+    }
+}
+
+/* ══════════════════════════════════════════════════════
+   TASK 3 — DEVICE INFO CAPTURE & LOGGING FOR EXPERIMENTS
+   Captures basic, non-identifying device/browser info from the browser
+   and sends it with every scan attempt to Dhruv's real, now-live logging
+   endpoint (POST /experiment/log-scan — see API_DOCS.md §30). Never allowed
+   to affect the actual scan flow — every failure is caught and swallowed
+   silently (console.debug only).
+   ══════════════════════════════════════════════════════ */
+
+// ✅ Dhruv's real endpoint (API_DOCS.md §30 "Real-World Experiment Logging API").
+var SCAN_LOG_ENDPOINT = BACKEND_BASE_URL + '/experiment/log-scan';
+
+// A stable per-device ID, so repeat visits from the same browser count as one
+// device in Dhruv's unique_devices analytic instead of a new fingerprint each
+// time. Persisted in localStorage (a real deployed site, not a Claude
+// artifact, so localStorage is fine here). Falls back gracefully if storage
+// is unavailable (private browsing, etc.) — logging just omits device_id and
+// the backend derives its own fingerprint from device_info + User-Agent.
+function getOrCreateDeviceId() {
+    try {
+        var key = 'swapify_device_id';
+        var existing = window.localStorage.getItem(key);
+        if (existing) return existing;
+        var fresh = 'web-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+        window.localStorage.setItem(key, fresh);
+        return fresh;
+    } catch (e) {
+        return null;
+    }
+}
+
+function getDeviceInfo() {
+    try {
+        var ua = navigator.userAgent || '';
+
+        // Device type — matches the backend's DEVICE_TYPES bucket set
+        // (mobile / tablet / desktop / scanner / unknown).
+        var deviceType = 'desktop';
+        if (/iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua))) {
+            deviceType = 'tablet';
+        } else if (/Mobi|Android|iPhone|iPod/i.test(ua)) {
+            deviceType = 'mobile';
+        }
+
+        // Operating system
+        var os = 'Unknown';
+        if (/Windows NT/i.test(ua)) os = 'Windows';
+        else if (/Mac OS X/i.test(ua)) os = 'macOS';
+        else if (/Android/i.test(ua)) os = 'Android';
+        else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+        else if (/Linux/i.test(ua)) os = 'Linux';
+
+        // Browser name + version (order matters: Edge/Opera/Chrome all include "Chrome" in UA)
+        var browser = 'Unknown', version = '', m;
+        if ((m = ua.match(/Edg\/([\d.]+)/))) { browser = 'Edge'; version = m[1]; }
+        else if ((m = ua.match(/OPR\/([\d.]+)/))) { browser = 'Opera'; version = m[1]; }
+        else if (/Chrome\//.test(ua) && !/Edg\/|OPR\//.test(ua) && (m = ua.match(/Chrome\/([\d.]+)/))) { browser = 'Chrome'; version = m[1]; }
+        else if ((m = ua.match(/Firefox\/([\d.]+)/))) { browser = 'Firefox'; version = m[1]; }
+        else if (/Safari\//.test(ua) && !/Chrome\//.test(ua) && (m = ua.match(/Version\/([\d.]+)/))) { browser = 'Safari'; version = m[1]; }
+
+        return {
+            device_type: deviceType,
+            os: os,
+            browser: browser,
+            browser_version: version,
+            screen_width: (window.screen && window.screen.width) || null,
+            screen_height: (window.screen && window.screen.height) || null,
+            viewport_width: window.innerWidth || null,
+            viewport_height: window.innerHeight || null,
+            pixel_ratio: window.devicePixelRatio || 1,
+            language: navigator.language || null,
+            platform: navigator.platform || null
+        };
+    } catch (e) {
+        // Even device-info capture itself must never throw and break a scan.
+        return { device_type: 'unknown' };
+    }
+}
+
+function logScanEvent(barcode, extra) {
+    try {
+        var info = getDeviceInfo();
+        extra = extra || {};
+
+        // Shaped to match the live ExperimentScanLog schema exactly
+        // (API_DOCS.md §30A): barcode, device_type, device_info, timestamp,
+        // device_id, notes. Anything we want to track that isn't part of that
+        // schema (event/outcome/score) is folded into a short `notes` string
+        // rather than invented extra fields the backend doesn't expect.
+        var noteParts = [];
+        if (extra.event) noteParts.push('event=' + extra.event);
+        if (extra.outcome) noteParts.push('outcome=' + extra.outcome);
+        if (extra.source) noteParts.push('source=' + extra.source);
+        if (extra.score !== undefined && extra.score !== null) noteParts.push('score=' + extra.score);
+
+        var payload = {
+            barcode: barcode,
+            device_type: info.device_type,
+            device_info: info,
+            timestamp: new Date().toISOString(),
+            device_id: getOrCreateDeviceId(),
+            notes: noteParts.length ? noteParts.join(', ') : null
+        };
+
+        // Not awaited on purpose — this must never delay or block a scan.
+        fetch(SCAN_LOG_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).catch(function (err) {
+            // Task 3C — graceful, silent failure. The product scan already
+            // succeeded/failed independently of this call.
+            console.debug('Scan logging unavailable (non-fatal):', err && err.message);
+        });
+    } catch (err) {
+        console.debug('Scan logging skipped (non-fatal):', err && err.message);
     }
 }
 
@@ -1532,100 +1562,33 @@ function showProductNotFound(barcode) {
     resultEl.innerHTML =
         '<div class="pnf-card">' +
             '<div class="pnf-icon-wrap">' +
-                '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">' +
-                    '<rect x="3" y="7" width="18" height="4" rx="1"/><path d="M5 11v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/><path d="M8 15l8 4M16 15l-8 4"/>' +
+                '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
+                    '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>' +
                 '</svg>' +
             '</div>' +
-            '<h2 class="pnf-title">We couldn\u2019t find that one</h2>' +
-            '<p class="pnf-sub">This barcode isn\u2019t in our database yet. Rescan, or help us add it.</p>' +
-            (barcode ? '<span class="pnf-barcode">Barcode: ' + barcode + '</span>' : '') +
+            '<div class="pnf-title">We couldn\u2019t find that product</div>' +
+            '<div class="pnf-sub">It\u2019s not in our backend, the Swapify catalogue, or Open Food Facts yet. Try one of these instead:</div>' +
+            (barcode ? '<div class="pnf-barcode">Barcode: ' + barcode + '</div>' : '<div style="height:20px;"></div>') +
             '<div class="pnf-actions">' +
-                '<button class="pnf-btn pnf-btn-primary" onclick="pnfScanAgain()">' +
-                    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 5v5h5"/></svg>' +
-                    'Try scanning again' +
+                '<button class="pnf-action-btn pnf-action-primary" onclick="pnfScanAgain()">' +
+                    '<div class="pnf-action-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 8V6a2 2 0 0 1 2-2h2"/><path d="M17 4h2a2 2 0 0 1 2 2v2"/><path d="M21 16v2a2 2 0 0 1-2 2h-2"/><path d="M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg></div>' +
+                    '<div class="pnf-action-text"><div class="pnf-action-label">Scan again</div><div class="pnf-action-desc">Retry the camera or re-enter the barcode</div></div>' +
+                    '<svg class="pnf-action-arrow" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>' +
                 '</button>' +
-                '<button class="pnf-btn pnf-btn-secondary" onclick="pnfUploadLabelPhoto()">' +
-                    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l4.5-6 3.5 4.5 2.5-3L20 16"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>' +
-                    'Upload photo of label (OCR)' +
+                '<button class="pnf-action-btn" onclick="pnfSearchByName()">' +
+                    '<div class="pnf-action-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>' +
+                    '<div class="pnf-action-text"><div class="pnf-action-label">Search by name</div><div class="pnf-action-desc">Look it up by product or brand name</div></div>' +
+                    '<svg class="pnf-action-arrow" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>' +
                 '</button>' +
-            '</div>' +
-            '<div class="pnf-links-row">' +
-                '<button class="pnf-link" onclick="pnfSearchByName()">Search by name</button>' +
-                '<span class="pnf-link-sep">\u00b7</span>' +
-                '<button class="pnf-link" onclick="pnfReportMissing(\'' + (barcode || '') + '\')">Report missing product</button>' +
+                '<button class="pnf-action-btn" onclick="pnfUploadLabelPhoto()">' +
+                    '<div class="pnf-action-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>' +
+                    '<div class="pnf-action-text"><div class="pnf-action-label">Upload label photo</div><div class="pnf-action-desc">Snap the ingredients label \u2014 we\u2019ll OCR &amp; score it</div></div>' +
+                    '<svg class="pnf-action-arrow" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>' +
+                '</button>' +
             '</div>' +
             '<div class="pnf-ocr-status" id="pnfOcrStatus"></div>' +
-            buildPnfSimilarHTML() +
+            '<div class="pnf-hint">Tip: barcodes are printed as digits directly beneath the black bars.</div>' +
         '</div>';
-
-    // Ring/number reveal + card unfold animations already run automatically
-    // via CSS, but we still nudge the stagger-safe entrance for the newly
-    // injected similar-products list.
-}
-
-// Pulls 2-3 solid-scoring products from the loaded CSV catalogue so the
-// fallback screen is never a dead end — the user always has somewhere to
-// go next even when their scanned barcode isn't in our data yet.
-function buildPnfSimilarHTML(){
-    if(!csvDBLoaded) return '';
-    var keys=Object.keys(csvDB);
-    if(!keys.length) return '';
-    // Sample a slice rather than the whole catalogue for performance, then
-    // rank by computed health score so the suggestions are genuinely good.
-    var sample=keys.slice(0, 60);
-    var scored=sample.map(function(bc){
-        var prod=csvDB[bc];
-        var norm=normBackend(prod);
-        var res=calculateScore(norm,'');
-        return {barcode:bc,name:prod.product_name||'Unknown Product',brand:prod.brand||'',score:res.score,gradeClass:res.gradeClass};
-    }).filter(function(p){ return p.name && p.name!=='Unknown Product'; });
-    scored.sort(function(a,b){ return b.score-a.score; });
-    var top=scored.slice(0,2);
-    if(!top.length) return '';
-    var cards=top.map(function(p){
-        return '<div class="pnf-similar-card" onclick="quickScan(\''+p.barcode+'\')">'
-            +'<div class="pnf-similar-thumb">\uD83E\uDD57</div>'
-            +'<div class="pnf-similar-info"><div class="pnf-similar-name">'+p.name+'</div><div class="pnf-similar-sub">'+(p.brand||'&nbsp;')+'</div></div>'
-            +'<div class="pnf-similar-score '+p.gradeClass+'">'+p.score+'</div>'
-            +'</div>';
-    }).join('');
-    return '<div class="pnf-similar-section">'
-        +'<div class="pnf-similar-label">\u26A1 While you\u2019re here \u2014 similar products we do have</div>'
-        +cards
-        +'</div>';
-}
-
-// "Report missing product" — best-effort ping to the backend's activity
-// logger so the team can see demand for this barcode; always confirms to
-// the user locally even if the network call fails or there's no backend
-// support for it yet, so the fallback screen never feels like a dead end.
-async function pnfReportMissing(barcode){
-    try{
-        await fetch(LOGGING_URL,{
-            method:'POST',
-            headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
-            body:JSON.stringify({action_type:'report_missing_product',barcode:barcode||null,metadata:{source:'pnf_screen'}})
-        });
-    }catch(e){ /* silent — still confirm to the user below */ }
-    showSimpleToast('Thanks for the heads up!','We\u2019ll look into adding this product.','\uD83D\uDCE9');
-}
-
-// Small reusable toast, styled like the badge-unlock toast, for quick
-// one-line confirmations (report submitted, link copied, etc).
-function showSimpleToast(title,sub,icon){
-    var existing=document.getElementById('simpleToast');
-    if(existing) existing.remove();
-    var toast=document.createElement('div');
-    toast.id='simpleToast';
-    toast.className='badge-toast';
-    toast.innerHTML='<div class="badge-toast-icon">'+(icon||'\u2705')+'</div>'
-        +'<div class="badge-toast-text"><div class="badge-toast-title">'+title+'</div>'
-        +(sub?'<div class="badge-toast-sub">'+sub+'</div>':'')+'</div>';
-    document.body.appendChild(toast);
-    setTimeout(function(){
-        toast.classList.add('hiding');
-        setTimeout(function(){ if(toast.parentNode) toast.remove(); },350);
-    },3200);
 }
 
 function pnfScanAgain() {
@@ -1729,19 +1692,19 @@ function renderOcrResult(data, file) {
         previewHTML = '<img src="' + objUrl + '" alt="Scanned label" style="width:140px;max-height:140px;object-fit:cover;display:block;margin:0 auto 16px;border-radius:16px;box-shadow:0 4px 16px rgba(0,0,0,0.15);">';
     } catch (e) {}
 
+    var hero = buildHeroScoreHTML(score, grade, gradeClass);
     resultEl.className = 'visible';
     resultEl.innerHTML =
+        hero.html +
         '<div class="barcode-row"><span class="barcode-num">OCR SCAN</span><span class="barcode-status">Scanned from label photo</span></div>' +
         previewHTML +
         '<div class="product-header"><div><div class="product-name">Scanned Label <span class="source-badge" style="background:#efe6ff;color:#6e46ff;">OCR</span></div>' +
-        '<div class="product-brand">Brand/name unknown \u2014 scored from label text only</div>' +
-        '<div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Score: ' + score + '/10 (' + grade + ')</div></div>' +
-        buildScoreHeroHTML(score,grade,gradeClass) + '</div>' +
+        '<div class="product-brand">Brand/name unknown \u2014 scored from label text only</div></div></div>' +
         ingredientFlagHTML +
         '<div class="section" style="margin-top:16px;"><div class="section-label">Extracted Ingredients</div><div class="info-box">' + (data.ingredients_text || 'Not detected') + '</div></div>' +
         '<div class="section"><div class="section-label">Raw OCR Text</div><div class="info-box" style="white-space:pre-wrap;max-height:160px;overflow:auto;">' + (data.raw_text || 'Not available') + '</div></div>' +
         '<div style="margin-top:16px;text-align:center;"><button class="btn-camera" style="background:var(--off-white);color:var(--text);" onclick="pnfScanAgain()">Scan a different product</button></div>';
-    animateScoreDials(resultEl);
+    animateHeroScore(hero.uid, score);
 }
 
 /* ── PREF MATCH BADGE (v2) ── */
@@ -1759,58 +1722,76 @@ function buildPrefMatchHTML(normalized,ingredients){
   return html;
 }
 
-/* ── SCORE HERO (Task 1A + Task 2A) ──
-   The final score is the star of the product page: big, bold number,
-   first thing in visual order (see .score-badge{order:-1} in CSS),
-   with a circular dial that animates from 0 to the real score. */
-function buildScoreHeroHTML(score,grade,gradeClass,confidence,confidenceClass){
-  var s=(typeof score==='number')?score:parseFloat(score);
-  if(isNaN(s)) s=0;
-  return '<div class="score-badge '+gradeClass+'" data-target-score="'+s+'">'
-    +'<svg class="score-ring" viewBox="0 0 100 100" aria-hidden="true">'
-    +'<circle class="score-ring-track" cx="50" cy="50" r="45"/>'
-    +'<circle class="score-ring-fill" cx="50" cy="50" r="45"/>'
-    +'</svg>'
-    +'<span class="score-num">0</span>'
-    +'<span class="score-max">/10</span>'
-    +'<span class="score-lbl">Grade '+grade+'</span>'
-    +'</div>';
+/* ══════════════════════════════════════════════════════
+   HERO SCORE CARD — Task 1A (score is the first thing seen,
+   large/bold, proper contrast) + Task 2A (dial + number animate
+   from 0 to the actual score on open).
+   ══════════════════════════════════════════════════════ */
+var _heroScoreUidCounter = 0;
+var HERO_DIAL_R = 70;
+var HERO_DIAL_CIRCUMFERENCE = 2 * Math.PI * HERO_DIAL_R;
+
+var HERO_GRADE_COLORS = {
+  A: { light: '#8fc400', dark: '#c6f135' },
+  B: { light: '#2a7dd4', dark: '#5aafff' },
+  C: { light: '#c98000', dark: '#ffd166' },
+  D: { light: '#e03a3a', dark: '#ff6b6b' },
+  F: { light: '#c62828', dark: '#ff5a7a' }
+};
+
+function buildHeroScoreHTML(score, grade, gradeClass) {
+    _heroScoreUidCounter += 1;
+    var uid = 'h' + _heroScoreUidCounter + '_' + Date.now();
+    var g = (grade || 'C').toUpperCase();
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var colorSet = HERO_GRADE_COLORS[g] || HERO_GRADE_COLORS.C;
+    var strokeColor = isDark ? colorSet.dark : colorSet.light;
+    var clampedScore = Math.max(0, Math.min(10, Number(score) || 0));
+
+    var html =
+        '<div class="hero-score-card ' + (gradeClass || '') + '" id="heroCard-' + uid + '" data-uid="' + uid + '" data-score="' + clampedScore + '" data-stroke="' + strokeColor + '">' +
+            '<div class="hero-score-dial-wrap">' +
+                '<svg class="hero-score-dial" viewBox="0 0 160 160">' +
+                    '<circle class="hero-dial-track" cx="80" cy="80" r="' + HERO_DIAL_R + '"></circle>' +
+                    '<circle class="hero-dial-progress" id="heroDial-' + uid + '" cx="80" cy="80" r="' + HERO_DIAL_R + '" ' +
+                        'transform="rotate(-90 80 80)" ' +
+                        'style="stroke:' + strokeColor + ';stroke-dasharray:' + HERO_DIAL_CIRCUMFERENCE.toFixed(1) + ';stroke-dashoffset:' + HERO_DIAL_CIRCUMFERENCE.toFixed(1) + ';">' +
+                    '</circle>' +
+                '</svg>' +
+                '<div class="hero-score-center">' +
+                    '<div class="hero-score-number" id="heroNum-' + uid + '">0</div>' +
+                    '<div class="hero-score-outof">out of 10</div>' +
+                '</div>' +
+            '</div>' +
+            '<div class="hero-score-grade-pill ' + (gradeClass || '') + '">Grade ' + g + '</div>' +
+        '</div>';
+
+    return { html: html, uid: uid };
 }
-/* Animates every score dial currently in the DOM (there's normally just
-   one, in #result) from 0 up to its real value: the ring stroke fills in
-   and the number counts up together, so the score is impossible to miss
-   the instant the product page opens. */
-function animateScoreDials(container){
-  var scope=container||document;
-  var badges=scope.querySelectorAll('.score-badge[data-target-score]');
-  var CIRCUMFERENCE=282.7;
-  badges.forEach(function(badge){
-    var target=parseFloat(badge.getAttribute('data-target-score'))||0;
-    var clamped=Math.max(0,Math.min(10,target));
-    var ring=badge.querySelector('.score-ring-fill');
-    var numEl=badge.querySelector('.score-num');
-    if(ring){
-      ring.style.strokeDashoffset=CIRCUMFERENCE;
-      // Force a reflow so the browser registers the 0-state before we
-      // transition to the target — otherwise it can jump straight there.
-      void ring.getBoundingClientRect();
-      requestAnimationFrame(function(){
-        ring.style.strokeDashoffset=(CIRCUMFERENCE*(1-clamped/10)).toFixed(2);
-      });
+
+function animateHeroScore(uid, score, durationMs) {
+    durationMs = durationMs || 900;
+    var dial = document.getElementById('heroDial-' + uid);
+    var numEl = document.getElementById('heroNum-' + uid);
+    if (!dial || !numEl) return;
+    var target = Math.max(0, Math.min(10, Number(score) || 0));
+    var targetOffset = HERO_DIAL_CIRCUMFERENCE * (1 - target / 10);
+    var start = null;
+
+    function step(ts) {
+        if (!start) start = ts;
+        var progress = Math.min(1, (ts - start) / durationMs);
+        var eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+        dial.style.strokeDashoffset = (HERO_DIAL_CIRCUMFERENCE - eased * (HERO_DIAL_CIRCUMFERENCE - targetOffset)).toFixed(2);
+        var shown = eased * target;
+        numEl.textContent = Number.isInteger(target) ? Math.round(shown) : shown.toFixed(1);
+        if (progress < 1) {
+            requestAnimationFrame(step);
+        } else {
+            numEl.textContent = Number.isInteger(target) ? target : target.toFixed(1);
+        }
     }
-    if(numEl){
-      var duration=900,startTime=null;
-      function step(ts){
-        if(!startTime) startTime=ts;
-        var progress=Math.min(1,(ts-startTime)/duration);
-        var eased=1-Math.pow(1-progress,3);
-        numEl.textContent=(target*eased).toFixed(1).replace(/\.0$/,'.0');
-        if(progress<1) requestAnimationFrame(step);
-        else numEl.textContent=(Math.round(target*10)/10)+'';
-      }
-      requestAnimationFrame(step);
-    }
-  });
+    requestAnimationFrame(step);
 }
 
 /* ── SCORE BREAKDOWN CARD ── */
@@ -1827,7 +1808,7 @@ function buildBreakdownHTML(r){
   }).join('');
   return '<div class="score-breakdown-card">'
     +'<div class="score-breakdown-title">📐 Score Breakdown</div>'
-    +'<div class="breakdown-rows">'+rows+'</div>'
+    +rows
     +'<div class="breakdown-row breakdown-final"><span class="breakdown-label">Final Score</span><span class="breakdown-amount '+finalCls+'">'+r.score+'/10 ('+r.grade+')</span></div>'
     +'</div>';
 }
@@ -2097,11 +2078,13 @@ function renderSwapify(prod){
   var prefHTML=buildPrefMatchHTML(prod.normalized,prod.ingredients);
   var breakdownHTML=buildBreakdownHTML(r);
   var ingredientFlagHTML=buildIngredientFlagsHTML(r.ingredientFlags);
+  var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass);
   resultEl.className='visible';
   resultEl.innerHTML=
+    hero.html+
     '<div class="barcode-row"><span class="barcode-num">'+bc+'</span><span class="barcode-status">OK · '+src+'</span></div>'+
     getPlaceholderHTML()+
-    '<div class="product-header"><div><div class="product-name">'+(p.product_name||'Unknown')+' <span class="source-badge '+badge+'">'+src+'</span>'+buildRecommendedBadgeHTML(p,r)+'</div><div class="product-brand">'+(p.brand||'Unknown')+'</div><div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Score: '+r.score+'/10 ('+r.grade+') <span class="confidence-badge '+r.confidenceClass+'">'+r.confidence+'</span></div></div>'+buildScoreHeroHTML(r.score,r.grade,r.gradeClass)+'</div>'+
+    '<div class="product-header"><div><div class="product-name">'+(p.product_name||'Unknown')+' <span class="source-badge '+badge+'">'+src+'</span>'+buildRecommendedBadgeHTML(p,r)+'</div><div class="product-brand">'+(p.brand||'Unknown')+'</div><div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Confidence: <span class="confidence-badge '+r.confidenceClass+'">'+r.confidence+'</span></div></div></div>'+
     buildRatingSectionHTML(bc,p.product_name||'Unknown')+
     buildGallerySectionHTML(bc,p.product_name||'Unknown')+
     buildReviewsSectionHTML(bc,p.product_name||'Unknown')+
@@ -2111,7 +2094,7 @@ function renderSwapify(prod){
     fh+
     actionRowHTML(prod)+
     '<div class="section" style="margin-top:16px;"><div class="section-label">Nutrition per serving ('+sv+'g)</div>'+nutrTableHTML(nutritionRows,sv+'g')+'</div>'+mh;
-  animateScoreDials(resultEl);
+  animateHeroScore(hero.uid,r.score);
   refreshCompareUI();
   refreshRatingSectionFromBackend(bc,p.product_name||'Unknown');
   if(typeof p.is_recommended!=='boolean') refreshRecommendedBadgeFromBackend(bc);
@@ -2136,11 +2119,13 @@ function renderOFF(prod){
   var breakdownHTML=buildBreakdownHTML(r);
   var ingredientFlagHTML=buildIngredientFlagsHTML(r.ingredientFlags);
   var imgWrapperId='off-img-'+bc.replace(/\W/g,'');
+  var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass);
   resultEl.className='visible';
   resultEl.innerHTML=
+    hero.html+
     '<div class="barcode-row"><span class="barcode-num">'+bc+'</span><span class="barcode-status">OK · OPEN FOOD FACTS</span></div>'+
     '<div id="'+imgWrapperId+'"><div class="img-loading-wrap"></div></div>'+
-    '<div class="product-header"><div><div class="product-name">'+(p.product_name||'Unknown')+' <span class="source-badge source-off">OPEN FOOD FACTS</span>'+buildRecommendedBadgeHTML(p,r)+'</div><div class="product-brand">'+(p.brands||'Unknown')+'</div><div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Score: '+r.score+'/10 ('+r.grade+') <span class="confidence-badge '+r.confidenceClass+'">'+r.confidence+'</span></div></div>'+buildScoreHeroHTML(r.score,r.grade,r.gradeClass)+'</div>'+
+    '<div class="product-header"><div><div class="product-name">'+(p.product_name||'Unknown')+' <span class="source-badge source-off">OPEN FOOD FACTS</span>'+buildRecommendedBadgeHTML(p,r)+'</div><div class="product-brand">'+(p.brands||'Unknown')+'</div><div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Confidence: <span class="confidence-badge '+r.confidenceClass+'">'+r.confidence+'</span></div></div></div>'+
     buildRatingSectionHTML(bc,p.product_name||'Unknown')+
     buildGallerySectionHTML(bc,p.product_name||'Unknown')+
     buildReviewsSectionHTML(bc,p.product_name||'Unknown')+
@@ -2151,7 +2136,7 @@ function renderOFF(prod){
     actionRowHTML(prod)+
     '<div class="section" style="margin-top:16px;"><div class="section-label">Nutrition per 100g</div>'+nutrTableHTML(nutritionRows,'100g')+'</div>'+
     '<div class="section"><div class="section-label">Ingredients</div><div class="info-box">'+(p.ingredients_text||'Not available')+'</div></div>';
-  animateScoreDials(resultEl);
+  animateHeroScore(hero.uid,r.score);
   renderOFFImageAsync(imgWrapperId,getOFFImageCandidates(p),p.product_name||'Product');
   refreshCompareUI();
   refreshRatingSectionFromBackend(bc,p.product_name||'Unknown');
@@ -3593,6 +3578,17 @@ var CATEGORY_META={
 var categoriesPanelOpen=false;
 var _currentCategoryView=null; // null = grid view, or a category id
 
+// Renders into BOTH the hidden #categoriesPanel (source template) and the
+// visible #categoriesPanelPage (what showPage('categories') actually shows).
+// Fixes the bug where clicking a subcategory updated only the hidden panel,
+// so the product list never appeared until the header nav was clicked again.
+function _setCategoriesHTML(html){
+  var panel=document.getElementById('categoriesPanel');
+  var page=document.getElementById('categoriesPanelPage');
+  if(panel) panel.innerHTML=html;
+  if(page) page.innerHTML=html;
+}
+
 function toggleCategoriesPanel(){
   categoriesPanelOpen=!categoriesPanelOpen;
   var panel=document.getElementById('categoriesPanel');
@@ -3618,14 +3614,12 @@ function buildCategoryIndex(){
 }
 
 function renderCategoriesPanel(){
-  var panel=document.getElementById('categoriesPanel');
-  if(!panel) return;
   if(_currentCategoryView){
     renderCategoryDetailView(_currentCategoryView);
     return;
   }
   if(!csvDBLoaded){
-    panel.innerHTML='<div class="cat-section"><div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category</div></div><div class="cat-empty">Loading product database…</div></div>';
+    _setCategoriesHTML('<div class="cat-section"><div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category</div></div><div class="cat-empty">Loading product database…</div></div>');
     return;
   }
   var index=buildCategoryIndex();
@@ -3639,10 +3633,10 @@ function renderCategoriesPanel(){
       +'<div class="cat-card-count">'+items.length+' product'+(items.length>1?'s':'')+'</div>'
       +'</div>';
   }).join('');
-  panel.innerHTML='<div class="cat-section">'
+  _setCategoriesHTML('<div class="cat-section">'
     +'<div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category</div></div>'
     +'<div class="cat-grid">'+(cardsHTML||'<div class="cat-empty">No categorized products found.</div>')+'</div>'
-    +'</div>';
+    +'</div>');
 }
 
 function openCategoryDetail(catId){
@@ -3655,7 +3649,6 @@ function backToCategoriesGrid(){
 }
 
 function renderCategoryDetailView(catId){
-  var panel=document.getElementById('categoriesPanel');
   var meta=CATEGORY_META[catId]||{label:catId,icon:'\uD83D\uDCE6'};
   var index=buildCategoryIndex();
   var items=(index[catId]||[]).slice().sort(function(a,b){return b.score-a.score;});
@@ -3669,11 +3662,11 @@ function renderCategoryDetailView(catId){
           +'</div>';
       }).join('')
     : '<div class="cat-empty">No products found in this category.</div>';
-  panel.innerHTML='<div class="cat-section">'
+  _setCategoriesHTML('<div class="cat-section">'
     +'<button class="btn-cat-back" onclick="backToCategoriesGrid()">\u2190 All Categories</button>'
     +'<div class="cat-header-row"><div class="cat-title">'+meta.icon+' '+meta.label+' <span style="font-family:\'DM Mono\',monospace;font-size:0.68rem;color:var(--text-muted);font-weight:400;">(top rated first)</span></div></div>'
     +'<div class="cat-product-list">'+listHTML+'</div>'
-    +'</div>';
+    +'</div>');
 }
 
 /* ══════════════════════════════════════════════════════
@@ -4249,7 +4242,17 @@ async function refreshReviewsSection(barcode){
 }
 
 function openReviewModal(barcode,name,editId){
-  // No login required — reviews save locally; backend sync happens if logged in
+  // Bug fix: POST /reviews requires authentication on the backend (no
+  // anonymous reviews). Previously this modal let anyone type and submit a
+  // review, which then failed server-side with a raw "Invalid token" alert —
+  // the review was never actually saved, but the modal still closed as if it
+  // had been, which looked like "it just submits but nothing shows up".
+  // Gate it up front instead, with a clear, friendly message.
+  if(!isReallyLoggedIn()){
+    alert('Please log in to write a review.');
+    openAuthModal();
+    return;
+  }
   _reviewModalBarcode=barcode; _reviewModalName=name||'this product'; _editingReviewId=editId||null;
   document.getElementById('reviewModalProductName').textContent=_reviewModalName;
   var textEl=document.getElementById('reviewTextInput');
@@ -4298,9 +4301,15 @@ async function submitReview(){
   var text=document.getElementById('reviewTextInput').value.trim();
   if(!_reviewDraftStars){ alert('Please select an overall star rating.'); return; }
   if(!text){ alert('Please write a short review.'); return; }
+  if(!isReallyLoggedIn()){ alert('Your session has expired — please log in again to submit this review.'); closeReviewModal(); openAuthModal(); return; }
   var barcode=_reviewModalBarcode;
   var editId=_editingReviewId;
-  closeReviewModal();
+
+  // Bug fix: the modal used to close immediately (before the network call),
+  // so a failed submission (e.g. expired token -> "Invalid token" from the
+  // backend) looked identical to a successful one — the review silently
+  // never appeared and the average never changed. Now the modal only closes,
+  // and the list only refreshes, on a *confirmed* success.
   try{
     if(editId){
       // No PATCH endpoint exists — emulate edit as delete-then-resubmit.
@@ -4313,10 +4322,19 @@ async function submitReview(){
     });
     if(!res.ok){
       var err=await res.json().catch(function(){return{};});
-      alert(err.detail||'Could not submit that review.');
+      var msg=err.detail||'Could not submit that review.';
+      if(res.status===401) msg='Your session has expired — please log in again and resubmit your review.';
+      alert(msg);
+      return; // modal stays open with the user's text intact so nothing is lost
     }
-  }catch(e){ alert('Backend unreachable — could not submit the review.'); }
-  refreshReviewsSection(barcode);
+  }catch(e){
+    alert('Backend unreachable — could not submit the review. Please try again.');
+    return; // modal stays open
+  }
+
+  // Confirmed success — now it's safe to close and refresh.
+  closeReviewModal();
+  await refreshReviewsSection(barcode);
 }
 
 async function voteReview(barcode,id,vote){
@@ -4649,10 +4667,8 @@ function showPage(page) {
 
   if (page === 'categories') {
     if (typeof renderCategoriesPanel === 'function') {
+      _currentCategoryView = null; // fresh grid each time Categories is opened from the header
       renderCategoriesPanel();
-      var catSrc = document.getElementById('categoriesPanel');
-      var catDst = document.getElementById('categoriesPanelPage');
-      if (catSrc && catDst) catDst.innerHTML = catSrc.innerHTML;
     }
   }
 
