@@ -1583,33 +1583,89 @@ function showProductNotFound(barcode) {
     resultEl.innerHTML =
         '<div class="pnf-card">' +
             '<div class="pnf-icon-wrap">' +
-                '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
-                    '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>' +
+                '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">' +
+                    '<rect x="3" y="7" width="18" height="4" rx="1"/><path d="M5 11v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/><path d="M8 15l8 4M16 15l-8 4"/>' +
                 '</svg>' +
             '</div>' +
-            '<div class="pnf-title">We couldn\u2019t find that product</div>' +
-            '<div class="pnf-sub">It\u2019s not in our backend, the Swapify catalogue, or Open Food Facts yet. Try one of these instead:</div>' +
-            (barcode ? '<div class="pnf-barcode">Barcode: ' + barcode + '</div>' : '<div style="height:20px;"></div>') +
+            '<div class="pnf-title">We couldn\u2019t find that one</div>' +
+            '<div class="pnf-sub">This barcode isn\u2019t in our database yet. Rescan, or help us add it.</div>' +
+            (barcode ? '<div class="pnf-barcode">Barcode: ' + barcode + '</div>' : '<div style="height:14px;"></div>') +
             '<div class="pnf-actions">' +
-                '<button class="pnf-action-btn pnf-action-primary" onclick="pnfScanAgain()">' +
-                    '<div class="pnf-action-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 8V6a2 2 0 0 1 2-2h2"/><path d="M17 4h2a2 2 0 0 1 2 2v2"/><path d="M21 16v2a2 2 0 0 1-2 2h-2"/><path d="M7 20H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3.5"/></svg></div>' +
-                    '<div class="pnf-action-text"><div class="pnf-action-label">Scan again</div><div class="pnf-action-desc">Retry the camera or re-enter the barcode</div></div>' +
-                    '<svg class="pnf-action-arrow" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>' +
+                '<button class="pnf-btn primary" onclick="pnfScanAgain()">' +
+                    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 5v5h5"/></svg>' +
+                    'Try scanning again' +
                 '</button>' +
-                '<button class="pnf-action-btn" onclick="pnfSearchByName()">' +
-                    '<div class="pnf-action-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>' +
-                    '<div class="pnf-action-text"><div class="pnf-action-label">Search by name</div><div class="pnf-action-desc">Look it up by product or brand name</div></div>' +
-                    '<svg class="pnf-action-arrow" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>' +
-                '</button>' +
-                '<button class="pnf-action-btn" onclick="pnfUploadLabelPhoto()">' +
-                    '<div class="pnf-action-icon"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>' +
-                    '<div class="pnf-action-text"><div class="pnf-action-label">Upload label photo</div><div class="pnf-action-desc">Snap the ingredients label \u2014 we\u2019ll OCR &amp; score it</div></div>' +
-                    '<svg class="pnf-action-arrow" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>' +
+                '<button class="pnf-btn secondary" onclick="pnfUploadLabelPhoto()">' +
+                    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l4.5-6 3.5 4.5 2.5-3L20 16"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>' +
+                    'Upload photo of label (OCR)' +
                 '</button>' +
             '</div>' +
+            '<div class="pnf-link-row">' +
+                '<button class="pnf-link" onclick="pnfSearchByName()">Search by name</button>' +
+                '<button class="pnf-link" onclick="pnfReportMissing(\'' + (barcode || '') + '\')">Report missing product</button>' +
+            '</div>' +
             '<div class="pnf-ocr-status" id="pnfOcrStatus"></div>' +
-            '<div class="pnf-hint">Tip: barcodes are printed as digits directly beneath the black bars.</div>' +
+            '<div class="pnf-smart-section" id="pnfSmartSection" style="display:none;">' +
+                '<div class="pnf-smart-label">' +
+                    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M13 2 3 14h7l-1 8 10-12h-7z"/></svg>' +
+                    'While you\u2019re here \u2014 similar products we do have' +
+                '</div>' +
+                '<div id="pnfSmartList"></div>' +
+            '</div>' +
         '</div>';
+
+    _loadPnfTrending();
+}
+
+async function _loadPnfTrending() {
+    try {
+        var res = await fetch(RECS_URL + '?limit=5');
+        if (!res.ok) return;
+        var data = await res.json();
+        var items = (data.recommendations || []).slice(0, 2);
+        if (!items.length) return;
+        var section = document.getElementById('pnfSmartSection');
+        var list = document.getElementById('pnfSmartList');
+        if (!section || !list) return;
+        list.innerHTML = items.map(function (p) {
+            var initial = (p.product_name || '?').trim().charAt(0).toUpperCase();
+            var gc = p.grade === 'A' ? '#2ECC71' : p.grade === 'B' ? '#8BC34A' : p.grade === 'C' ? '#FFC107' : '#F4432E';
+            return '<div class="pnf-similar-card" onclick="quickScan(\'' + p.barcode + '\')">' +
+                '<div class="pnf-similar-thumb">' + initial + '</div>' +
+                '<div class="pnf-similar-info"><div class="pnf-similar-name">' + (p.product_name || 'Unknown') + '</div><div class="pnf-similar-brand">' + (p.brand || '') + '</div></div>' +
+                '<div class="pnf-similar-score" style="color:' + gc + ';background:' + gc + '1a;">' + Math.round((p.health_score || 0) * 10) + '</div>' +
+            '</div>';
+        }).join('');
+        section.style.display = '';
+    } catch (e) {
+        // Trending products are a nice-to-have here — never surface this failure.
+    }
+}
+
+function pnfReportMissing(barcode) {
+    if (!isReallyLoggedIn()) {
+        alert('Please log in to report a missing product \u2014 this helps us credit contributors.');
+        openAuthModal();
+        return;
+    }
+    var name = (prompt('What\u2019s this product called? (optional)') || '').trim();
+    (async function () {
+        try {
+            var res = await fetch(BACKEND_BASE_URL + '/report-missing', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, getAuthHeaders()),
+                body: JSON.stringify({ barcode: barcode, product_name: name || null })
+            });
+            if (!res.ok) {
+                if (handleAuthExpiry(res)) return;
+                alert('Could not submit the report \u2014 please try again.');
+                return;
+            }
+            alert('Thanks! We\u2019ve logged this product for review.');
+        } catch (e) {
+            alert('Backend unreachable \u2014 could not submit the report.');
+        }
+    })();
 }
 
 function pnfScanAgain() {
@@ -1753,11 +1809,11 @@ var HERO_DIAL_R = 70;
 var HERO_DIAL_CIRCUMFERENCE = 2 * Math.PI * HERO_DIAL_R;
 
 var HERO_GRADE_COLORS = {
-  A: { light: '#8fc400', dark: '#c6f135' },
-  B: { light: '#2a7dd4', dark: '#5aafff' },
-  C: { light: '#c98000', dark: '#ffd166' },
-  D: { light: '#e03a3a', dark: '#ff6b6b' },
-  F: { light: '#c62828', dark: '#ff5a7a' }
+  A: { light: '#2ECC71', dark: '#3ddc82', bgLight: '#E8F9EE', bgDark: '#0e2a18' },
+  B: { light: '#7cb342', dark: '#96d15c', bgLight: '#F1F8E4', bgDark: '#1a2a0e' },
+  C: { light: '#e0a300', dark: '#ffd166', bgLight: '#FFF7E0', bgDark: '#2a2000' },
+  D: { light: '#e0562e', dark: '#ff8a5c', bgLight: '#FDEEE7', bgDark: '#2a1408' },
+  F: { light: '#F4432E', dark: '#ff5a4a', bgLight: '#FDE9E7', bgDark: '#300a08' }
 };
 
 function buildHeroScoreHTML(score, grade, gradeClass) {
@@ -1767,6 +1823,7 @@ function buildHeroScoreHTML(score, grade, gradeClass) {
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var colorSet = HERO_GRADE_COLORS[g] || HERO_GRADE_COLORS.C;
     var strokeColor = isDark ? colorSet.dark : colorSet.light;
+    var pillBg = isDark ? colorSet.bgDark : colorSet.bgLight;
     var clampedScore = Math.max(0, Math.min(10, Number(score) || 0));
 
     var html =
@@ -1779,12 +1836,13 @@ function buildHeroScoreHTML(score, grade, gradeClass) {
                         'style="stroke:' + strokeColor + ';stroke-dasharray:' + HERO_DIAL_CIRCUMFERENCE.toFixed(1) + ';stroke-dashoffset:' + HERO_DIAL_CIRCUMFERENCE.toFixed(1) + ';">' +
                     '</circle>' +
                 '</svg>' +
+                '<div class="hero-score-puck"></div>' +
                 '<div class="hero-score-center">' +
-                    '<div class="hero-score-number" id="heroNum-' + uid + '">0</div>' +
+                    '<div class="hero-score-number" id="heroNum-' + uid + '" style="color:' + strokeColor + ';">0</div>' +
                     '<div class="hero-score-outof">out of 10</div>' +
+                    '<div class="hero-score-grade-pill" style="color:' + strokeColor + ';background:' + pillBg + ';">Grade ' + g + '</div>' +
                 '</div>' +
             '</div>' +
-            '<div class="hero-score-grade-pill ' + (gradeClass || '') + '">Grade ' + g + '</div>' +
         '</div>';
 
     return { html: html, uid: uid };
