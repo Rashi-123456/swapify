@@ -726,14 +726,31 @@ async function syncPreferencesToBackend(){
    ══════════════════════════════════════════════════════ */
 function openShareModal(prod){
   var p=prod.data,r=prod.result;
+  var g=(r.grade||'C').toUpperCase();
+  var isDark=document.documentElement.getAttribute('data-theme')==='dark';
+  var colorSet=HERO_GRADE_COLORS[g]||HERO_GRADE_COLORS.C;
+  var strokeColor=isDark?colorSet.dark:colorSet.light;
+  var pillBg=isDark?colorSet.bgDark:colorSet.bgLight;
+
   document.getElementById('sc-name').textContent=p.product_name||'Unknown Product';
   document.getElementById('sc-brand').textContent=p.brand||p.brands||'';
-  document.getElementById('sc-grade').textContent=r.grade;
-  document.getElementById('sc-score').textContent=r.score+'/10';
-  document.getElementById('sc-score-big').textContent='Score: '+r.score+'/10';
-  document.getElementById('sc-grade-label').textContent='Grade '+r.grade;
-  document.getElementById('sc-badge').className='share-card-badge '+r.gradeClass;
+  document.getElementById('sc-grade-num').textContent=r.score;
+  document.getElementById('sc-grade-num').style.color=strokeColor;
+  document.getElementById('sc-badge').textContent='Grade '+g;
+  document.getElementById('sc-badge').style.color=strokeColor;
+  document.getElementById('sc-badge').style.background=pillBg;
   document.getElementById('sc-warnings').innerHTML=r.flags.map(function(f){return'<span class="'+(f.c==='tag-green'?'share-card-warn-good':'share-card-warn-tag')+'">'+f.t+'</span>';}).join('');
+
+  // Real product photo when one exists (not the shared "no image" placeholder);
+  // otherwise keep the generic package icon already in the markup.
+  var thumb=document.getElementById('sc-thumb');
+  var imgUrl=p.image_url;
+  if(imgUrl && imgUrl.indexOf('_placeholder.svg')===-1){
+    thumb.innerHTML='<img src="'+imgUrl+'" alt="">';
+  } else {
+    thumb.innerHTML='<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>';
+  }
+
   document.getElementById('shareModalOverlay').classList.add('active');
   document.body.style.overflow='hidden';
 }
@@ -1880,13 +1897,19 @@ function buildBreakdownHTML(r){
     if(b.kind==='multiplier'){
       return '<div class="breakdown-row breakdown-multiplier" data-tooltip="'+(b.note||'')+'"><span class="breakdown-label">✦ Transparency Multiplier<span class="breakdown-cat">'+(b.note||'')+'</span></span><span class="breakdown-amount amt-base">×'+b.amount+'</span></div>';
     }
+    if(b.kind==='base'){
+      // Task 4 — the base score is a neutral starting point (5.0/10), not an
+      // earned result, so it gets its own visually distinct row rather than
+      // blending in with the penalty/bonus lines below it.
+      return '<div class="breakdown-row breakdown-base"><span class="breakdown-label">\u2696\uFE0F '+b.label+'<span class="breakdown-cat">Neutral starting point — every product begins here</span></span><span class="breakdown-amount amt-base-num">'+b.amount+'</span></div>';
+    }
     var cls=b.kind==='base'?'amt-base':(b.amount<0?'amt-neg':'amt-pos');
     var sign=b.amount>0?'+':'';
     var catTag=b.cat?'<span class="breakdown-cat">'+b.cat+'</span>':'';
     return '<div class="breakdown-row"><span class="breakdown-label">'+b.label+catTag+'</span><span class="breakdown-amount '+cls+'">'+sign+b.amount+'</span></div>';
   }).join('');
   return '<div class="score-breakdown-card">'
-    +'<div class="score-breakdown-title">📐 Score Breakdown</div>'
+    +'<div class="score-breakdown-title"><span>📐 Score Breakdown</span><button class="breakdown-how-link" onclick="showPage(\'how-scoring-works\')">How this works \u2192</button></div>'
     +rows
     +'<div class="breakdown-row breakdown-final"><span class="breakdown-label">Final Score</span><span class="breakdown-amount '+finalCls+'">'+r.score+'/10 ('+r.grade+')</span></div>'
     +'</div>';
@@ -2290,6 +2313,58 @@ function escapeChatText(s){
   return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// Task 3 — consistent AI chat formatting. The backend's /chat responses vary
+// in shape (sometimes a numbered list, sometimes bullet points, sometimes
+// plain prose) since that's up to the LLM's own output style. Previously the
+// frontend just HTML-escaped the raw text and dumped it in one block, so a
+// numbered list looked identical to a paragraph — inconsistent by definition.
+// This renders any of those shapes into real, consistent HTML: <ol>/<ul> for
+// lists, <p> for paragraphs, <br> for single line breaks within a paragraph,
+// and **bold** markdown into <strong>. Text is escaped before any tag is
+// built, so nothing in the model's output can inject markup.
+function inlineFormatChatText(s){
+  return s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+}
+function formatChatResponse(text){
+  var esc=escapeChatText(text).replace(/\r\n/g,'\n');
+  var lines=esc.split('\n');
+  var html='',listBuffer=[],listType=null,paraBuffer=[];
+
+  function flushList(){
+    if(!listBuffer.length) return;
+    var tag=listType==='ol'?'ol':'ul';
+    html+='<'+tag+' class="chat-list">'+listBuffer.map(function(item){return'<li>'+item+'</li>';}).join('')+'</'+tag+'>';
+    listBuffer=[]; listType=null;
+  }
+  function flushPara(){
+    if(!paraBuffer.length) return;
+    html+='<p>'+paraBuffer.join('<br>')+'</p>';
+    paraBuffer=[];
+  }
+
+  lines.forEach(function(line){
+    var trimmed=line.trim();
+    var olMatch=trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+    var ulMatch=trimmed.match(/^[-*•]\s+(.*)$/);
+    if(olMatch){
+      flushPara();
+      if(listType!=='ol') flushList();
+      listType='ol'; listBuffer.push(inlineFormatChatText(olMatch[2]));
+    } else if(ulMatch){
+      flushPara();
+      if(listType!=='ul') flushList();
+      listType='ul'; listBuffer.push(inlineFormatChatText(ulMatch[1]));
+    } else if(trimmed===''){
+      flushList(); flushPara();
+    } else {
+      flushList();
+      paraBuffer.push(inlineFormatChatText(trimmed));
+    }
+  });
+  flushList(); flushPara();
+  return html||'<p></p>';
+}
+
 function chatCurrentContext(){
   if(!lastScannedProduct) return null;
   var p=lastScannedProduct;
@@ -2344,7 +2419,7 @@ function renderChatBubble(role,text,isError){
   var m=document.getElementById('chatMessages');
   var div=document.createElement('div');
   div.className='chat-bubble '+(role==='user'?'chat-bubble-user':'chat-bubble-ai')+(isError?' chat-error':'');
-  div.innerHTML=escapeChatText(text);
+  div.innerHTML=role==='ai'?formatChatResponse(text):escapeChatText(text);
   m.appendChild(div);
   scrollChatToBottom();
   return div;
@@ -3463,16 +3538,41 @@ async function tryFetchHomeFeed(){
     return await res.json();
   }catch(e){ return null; }
 }
+function _wchalIcon(){
+  return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="6"/><path d="M9 14.5 7 22l5-3 5 3-2-7.5"/></svg>';
+}
+function _wchalDaysHTML(pct){
+  var done=Math.max(0,Math.min(7,Math.round((pct/100)*7)));
+  var dots='';
+  for(var i=0;i<7;i++){
+    var cls=i<done?'done':(i===done?'today':'');
+    dots+='<div class="wchal-day '+cls+'"></div>';
+  }
+  return '<div class="wchal-days">'+dots+'</div>';
+}
 // Renders the single weekly_challenge object /home-feed returns (not a list).
 // If the user hasn't joined it yet, `progress` is null and we show a "Join"
 // prompt instead of a bar, per the documented anonymous/unjoined shape.
 async function buildChallengePreviewFromFeed(c){
   if(!c) return await buildChallengesPreviewHTML();
+  var title=c.title||'Weekly Challenge';
   if(!c.progress){
-    return '<div class="chal-mini-item"><div class="chal-mini-top"><span class="chal-mini-name">'+(c.title||'Weekly Challenge')+'</span><button class="dash-view-all-btn" onclick="toggleChallengesPanel()">Join \u2192</button></div><div class="dash-chal-progress-mini">'+(c.description||'')+'</div></div>';
+    return '<div class="wchal-card">'
+      +'<div class="wchal-top"><div class="wchal-eyebrow">\u2605 This Week\u2019s Challenge</div></div>'
+      +'<div class="wchal-title">'+title+'</div>'
+      +'<div class="wchal-sub">'+(c.description||'')+'</div>'
+      +'<button class="wchal-join-btn" onclick="toggleChallengesPanel()">Join This Challenge</button>'
+      +'</div>';
   }
   var p=c.progress, pct=p.percent!==undefined?p.percent:Math.min(100,Math.round((p.current/p.target)*100));
-  return '<div class="chal-preview-row"><div class="chal-mini-item"><div class="chal-mini-top"><span class="chal-mini-name">'+(c.title||'Weekly Challenge')+'</span><span class="chal-mini-pct">'+p.current+'/'+p.target+'</span></div><div class="chal-mini-track"><div class="chal-mini-fill" style="width:'+pct+'%;"></div></div></div></div>';
+  return '<div class="wchal-card">'
+    +'<div class="wchal-top"><div class="wchal-eyebrow">\u2605 This Week\u2019s Challenge</div><div class="wchal-pct-pill">'+pct+'% there</div></div>'
+    +'<div class="wchal-title">'+title+'</div>'
+    +'<div class="wchal-sub">'+(c.description||'')+'</div>'
+    +'<div class="wchal-progress-row"><div class="wchal-track"><div class="wchal-fill" style="width:'+pct+'%;"></div></div><div class="wchal-count">'+p.current+'/'+p.target+'</div></div>'
+    +_wchalDaysHTML(pct)
+    +'<div class="wchal-footer"><div class="wchal-reward"><div class="wchal-reward-badge">'+_wchalIcon()+'</div><div class="wchal-reward-text"><b>'+(c.badge||'Challenge badge')+'</b>'+(p.remaining>0?p.remaining+' more to unlock':'Unlocked!')+'</div></div><button class="wchal-cta" onclick="toggleChallengesPanel()">View challenge \u2192</button></div>'
+    +'</div>';
 }
 
 async function renderHomeDashboard(){
@@ -3484,7 +3584,7 @@ async function renderHomeDashboard(){
   var sub=user?'Your personalized health feed':'Scan a product or log in to personalize this feed';
 
   var feed=await tryFetchHomeFeed();
-  var feedNote=feed?'<span class="dash-feed-source">via /home-feed</span>':'';
+  var feedNote=''; // Task 2C: was a dev-only "via /home-feed" badge leaking an internal endpoint name into the UI
   var isPersonalized=!!(feed&&feed.personalized);
 
   if(!isPersonalized && !h.length){
@@ -3537,13 +3637,20 @@ async function renderHomeDashboard(){
   } else {
     try{ recs=await loadRecommendations(); }catch(e){ recs=[]; }
   }
+  // Task 2D: nothing scoring 7 or below is ever labeled a "Top Pick" — the
+  // /recommendations backend ranks by relevance (category match, preferences,
+  // community rating), not a health-score floor, so a mediocre product could
+  // otherwise surface here. Filtered client-side until this is enforced
+  // server-side (coordinate with Dhruv on adding the same >7 floor the
+  // "Swapify Recommended" badge already uses).
+  recs=(recs||[]).filter(function(rec){ return (rec.score||0)>7; });
   var recsHTML=recs&&recs.length
     ? '<div class="dash-rec-row">'+recs.slice(0,3).map(function(rec){
         var gc=dashScoreClass(rec.score);
         var gr=rec.grade||(rec.score>=9?'A':rec.score>=7?'B':rec.score>=5?'C':rec.score>=3?'D':'F');
         return '<div class="dash-rec-card" onclick="quickScan(\''+rec.barcode+'\')"><div class="dash-rec-score '+gc+'">'+gr+'</div><div><div class="dash-rec-name">'+(rec.name||'Unknown')+' '+buildRecommendedBadgeHTML(null,{score:rec.score},true)+'</div><div class="dash-rec-reason">'+escapeChatText(rec.reason||'Recommended for you')+'</div></div></div>';
       }).join('')+'</div>'
-    : '<div class="dash-empty-note">Scan a few more products to unlock recommendations!</div>';
+    : '<div class="dash-empty-note">No products score high enough for a Top Pick yet — keep scanning to discover healthier options!</div>';
 
   var earned=[];
   if(feed&&Array.isArray(feed.badges_earned)&&feed.badges_earned.length){
@@ -3581,11 +3688,20 @@ function renderQuickStats(){
     var d=new Date(item.timestamp);
     return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
   }).length;
+  // Task 2B: the catalogue count is genuinely live (never hardcoded — csvCount
+  // comes from the loaded database), but "Products available" undersold real
+  // coverage since a scan also falls back to Open Food Facts when a barcode
+  // isn't in the curated catalogue. Label reflects both sources honestly.
   var productsAvailable=csvDBLoaded?(csvCount+'+'):'…';
   el.innerHTML=
-    '<div class="quick-stat-card"><span class="quick-stat-num">'+productsAvailable+'</span><span class="quick-stat-label">Products available</span></div>'
-    +'<div class="quick-stat-card"><span class="quick-stat-num">'+scansThisMonth+'</span><span class="quick-stat-label">Scans this month</span></div>'
-    +'<div class="quick-stat-card"><span class="quick-stat-num">4.8★</span><span class="quick-stat-label">User rating</span></div>';
+    '<div class="quick-stat-card"><span class="quick-stat-num">'+productsAvailable+'</span><span class="quick-stat-label">Curated products <span class="quick-stat-sub">+ global database coverage</span></span></div>'
+    +'<div class="quick-stat-card"><span class="quick-stat-num">'+scansThisMonth+'</span><span class="quick-stat-label">Scans this month</span></div>';
+  // Task 2A: "4.8★ User rating" was a fabricated number — no real rating data
+  // ever existed to back it, which runs directly against Swapify's core promise
+  // of only ever showing real numbers. Removed rather than faked. A genuine
+  // in-app rating (rate the app itself, from Settings, shown once enough
+  // ratings exist) is a reasonable follow-up feature if this stat is wanted
+  // back — flagged here rather than quietly reintroduced with placeholder data.
 }
 
 /* ══════════════════════════════════════════════════════
@@ -3638,7 +3754,7 @@ function renderStreakGoalCard(){
     +'<div class="goal-progress-wrap">'
     +'<div class="goal-progress-label-row"><span class="goal-progress-text">Today\u2019s goal: scan <strong>'+goal+'</strong> product'+(goal>1?'s':'')+'</span><span class="goal-progress-text"><strong>'+todayCount+'</strong> / '+goal+'</span></div>'
     +'<div class="goal-progress-track"><div class="goal-progress-fill'+(complete?' complete':'')+'" style="width:'+pct+'%;"></div></div>'
-    +(complete?'<div class="goal-complete-note">\u2705 Daily goal reached — nice work!</div>':'')
+    +(complete?'<div class="goal-complete-note"><span class="goal-complete-icon"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>Daily goal reached — nice work!</div>':'')
     +'</div>'
     +'</div>';
 }
@@ -3930,14 +4046,25 @@ async function buildChallengesPreviewHTML(){
   var list=_challengesCache||await fetchChallenges();
   if(!list||!list.length) return '<div class="dash-empty-note">No active challenges right now — check back soon!</div>';
   var joined=list.filter(function(c){return c.joined;});
-  var show=(joined.length?joined:list).slice(0,3);
-  return '<div class="chal-preview-row">'+show.map(function(c){
-    if(!c.progress){
-      return '<div class="chal-mini-item"><div class="chal-mini-top"><span class="chal-mini-name">'+(c.title||'Challenge')+'</span><span class="chal-mini-pct">'+(c.participant_count||0)+' joined</span></div></div>';
-    }
-    var p=c.progress;
-    return '<div class="chal-mini-item"><div class="chal-mini-top"><span class="chal-mini-name">'+(c.title||'Challenge')+'</span><span class="chal-mini-pct">'+p.current+'/'+p.target+'</span></div><div class="chal-mini-track"><div class="chal-mini-fill" style="width:'+p.percent+'%;"></div></div></div>';
-  }).join('')+'</div>';
+  var featured=(joined.length?joined:list)[0];
+  var title=featured.title||'Weekly Challenge';
+  if(!featured.progress){
+    return '<div class="wchal-card">'
+      +'<div class="wchal-top"><div class="wchal-eyebrow">\u2605 This Week\u2019s Challenge</div><div class="wchal-pct-pill">'+(featured.participant_count||0)+' joined</div></div>'
+      +'<div class="wchal-title">'+title+'</div>'
+      +'<div class="wchal-sub">'+(featured.description||'')+'</div>'
+      +'<button class="wchal-join-btn" onclick="toggleChallengesPanel()">Join This Challenge</button>'
+      +'</div>';
+  }
+  var p=featured.progress, pct=p.percent!==undefined?p.percent:Math.min(100,Math.round((p.current/p.target)*100));
+  return '<div class="wchal-card">'
+    +'<div class="wchal-top"><div class="wchal-eyebrow">\u2605 This Week\u2019s Challenge</div><div class="wchal-pct-pill">'+pct+'% there</div></div>'
+    +'<div class="wchal-title">'+title+'</div>'
+    +'<div class="wchal-sub">'+(featured.description||'')+'</div>'
+    +'<div class="wchal-progress-row"><div class="wchal-track"><div class="wchal-fill" style="width:'+pct+'%;"></div></div><div class="wchal-count">'+p.current+'/'+p.target+'</div></div>'
+    +_wchalDaysHTML(pct)
+    +'<div class="wchal-footer"><div class="wchal-reward"><div class="wchal-reward-badge">'+_wchalIcon()+'</div><div class="wchal-reward-text"><b>'+(featured.badge||'Challenge badge')+'</b>'+(p.remaining>0?p.remaining+' more to unlock':'Unlocked!')+'</div></div><button class="wchal-cta" onclick="toggleChallengesPanel()">View challenge \u2192</button></div>'
+    +'</div>';
 }
 
 function toggleChallengesPanel(){
@@ -4867,10 +4994,8 @@ function copyScoreToClipboard(score) {
     btnChallengesHeader:   'challenges',
     btnLeaderboardHeader:  'leaderboard',
     btnSettingsHeader:     'settings',
-    btnBadgesHeader:       'profile',
     btnWeeklyHeader:       'history',
     btnMonthlyHeader:      'history',
-    btnFavHeader:          'favorites',
     btnRecsHeader:         'home'
   };
   Object.keys(btnMap).forEach(function(id){
