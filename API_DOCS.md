@@ -381,8 +381,17 @@ curl -X POST http://127.0.0.1:8000/compare-multiple \
 
 ### 5. Similar Products API ("Better Alternatives")
 This endpoint returns healthier alternatives: products in the **same category** as
-the scanned product with a **higher** health score, limited to 3 items. If the
-scanned product has no category, all other products are considered.
+the scanned product with a **higher** health score, limited to 3 items.
+
+> **Category matching (strict).** Alternatives are drawn **only** from the exact
+> same category as the scanned product, using the shared category taxonomy in
+> `src/category_taxonomy.py` (also used by the CSV seed, `sync_db.py` and
+> `import_data.py`, so every code path agrees). If a product's category is
+> unknown/`other`, the endpoint returns an **empty list** rather than a
+> grab-bag — so, for example, *Ching's Schezwan Chutney* (category `sauce`)
+> never surfaces *Maggi noodles* (category `noodles`) as an "alternative". A
+> genuinely category-less product yields `[]`, which is the correct answer:
+> better no suggestion than a mismatched one.
 
 **Personalization (dietary preferences):** when the request identifies a user —
 either via an `Authorization: Bearer <token>` header **or** an explicit
@@ -409,14 +418,17 @@ generic one: ordered by health score descending.
 
 **Example using `curl`:**
 ```bash
-# Generic (anonymous)
-curl http://127.0.0.1:8000/similar/8901262176224
+# Generic (anonymous) — 8906127540016 = Farmley Datebites (category protein_bar)
+curl http://127.0.0.1:8000/similar/8906127540016
 
 # Personalized for a logged-in user (high-protein preference ranks protein bars first)
-curl -H "Authorization: Bearer <YOUR_TOKEN>" http://127.0.0.1:8000/similar/8901262176224
+curl -H "Authorization: Bearer <YOUR_TOKEN>" http://127.0.0.1:8000/similar/8906127540016
 
 # Personalized via explicit user_id
-curl "http://127.0.0.1:8000/similar/8901262176224?user_id=2"
+curl "http://127.0.0.1:8000/similar/8906127540016?user_id=2"
+
+# Category-less / singleton category -> empty list (no cross-category grab-bag)
+curl http://127.0.0.1:8000/similar/8901595862962   # Ching's Schezwan Chutney -> []
 ```
 
 **Expected JSON Response (200 OK):**
@@ -488,7 +500,7 @@ curl http://127.0.0.1:8000/health
   "started_at": "2026-07-12T15:37:35.628068+00:00",
   "server_time": "2026-07-13T15:37:48.310000+00:00",
   "database": "ok",
-  "products_loaded": 101,
+  "products_loaded": 252,
   "pid": 23180
 }
 ```
@@ -517,6 +529,51 @@ field keeps working unchanged.
 Answers without touching the database, so a monitor polling every 5 minutes adds
 essentially no load to the free tier. Use `/health` when you want the full picture,
 `/ping` when you only need to know the process is answering.
+
+#### Live product count — `/product-count`
+
+Returns the **live** "Products available" figure for the frontend, counted from
+the database on every request (never hard-coded).
+
+- **URL:** `/product-count`
+- **Method:** `GET`
+
+**Example using `curl`:**
+```bash
+curl http://127.0.0.1:8000/product-count
+```
+
+**Expected JSON Response (200 OK):**
+```json
+{
+  "curated_count": 252,
+  "categories": 23,
+  "by_category": {
+    "chocolate": 48,
+    "chips": 34,
+    "soft_drink": 30,
+    "juice": 20,
+    "biscuit": 18,
+    "...": "..."
+  },
+  "external_source": "Open Food Facts",
+  "external_coverage": "on-demand",
+  "total_coverage_note": "252 products are curated in Swapify's database; any other barcode is resolved live against Open Food Facts at scan time, so total reachable products also include that external catalogue.",
+  "generated_at": "2026-07-17T20:51:15.895081+00:00"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `curated_count` | **Live** row count of Swapify's curated `products` table — the headline "Products available" number. Reflects the real architecture, not a constant. |
+| `categories` / `by_category` | Number of distinct categories and the per-category breakdown (also demonstrates the count is genuine). |
+| `external_source` / `external_coverage` | Swapify also resolves any barcode **not** in the curated DB against Open Food Facts at scan time (`on-demand`), so total *coverage* is far larger than `curated_count`. |
+| `total_coverage_note` | A ready-to-display sentence describing curated + external coverage. |
+| `generated_at` | UTC timestamp the count was computed. |
+
+Returns **HTTP 503** if the database is unreadable. Intended for the frontend's
+"Products available" widget (share `curated_count` for the headline, and
+optionally `total_coverage_note` for the "+ millions via Open Food Facts" line).
 
 ```json
 { "status": "ok", "uptime_seconds": 86412.7 }
@@ -778,7 +835,7 @@ own data. It integrates with **free AI APIs** — **OpenRouter** (many free-tier
 models) as the primary provider, with **Google Gemini** as an optional automatic
 failover — so a rate-limited free tier still returns a genuine AI answer.
 
-It is built to answer four kinds of questions:
+It is built to answer five kinds of questions:
 1. **Product ingredients and their risks** — e.g. *"What ingredients here are
    risky and why?"* (uses the product's flagged ingredients and risk levels).
 2. **Health scores and why** — e.g. *"Why did this get such a low score?"* The
@@ -787,12 +844,44 @@ It is built to answer four kinds of questions:
    passed to the model, so it explains the real math instead of guessing.
 3. **Ingredient substitutions** — e.g. *"What can I use instead of sugar?"* (see
    below).
-4. **General nutrition & food-transparency** questions — e.g. *"Why do vague
+4. **Top picks from the catalogue** — e.g. *"What are the top picks from all
+   products?"* or *"best chocolates"* (see **Structured top picks** below).
+5. **General nutrition & food-transparency** questions — e.g. *"Why do vague
    ingredient labels matter?"* (works with no barcode).
 
 When a `barcode` is supplied, the product's nutrition, ingredients, health score,
 flagged ingredients **and score breakdown** are passed to the model as grounding
 context.
+
+#### Greeting fast-path (performance)
+A bare greeting or smalltalk message (`"hi"`, `"hello"`, `"thanks"`, `"how are
+you"`, …) with no barcode is answered **instantly from a canned welcome — the LLM
+is never called**. This is what keeps a one-word "hi" at a few **milliseconds**
+instead of the multi-second (previously ~25s) round-trip a free-tier model + its
+failover chain would otherwise cost. Such a response has `source: "fast-path"`.
+The match is conservative: anything beyond a plain greeting (e.g. *"hi, is Maggi
+healthy?"*) still goes to the AI. Provider HTTP timeouts are also lowered and
+configurable (`OPENROUTER_TIMEOUT` / `GEMINI_TIMEOUT`, default 12s) so a slow
+model fails over sooner.
+
+#### Structured top picks (7+ rule)
+When the question asks for the best/top/healthiest products (*"what are the top
+picks from all products"*, *"best chocolates"*, *"healthiest noodles"*), the
+endpoint answers **from the real scored catalogue**, not with a generic
+paragraph. It scores every product with the same engine the Home page and product
+pages use and applies the **7+ rule** — a genuinely good, "Swapify Recommended"
+pick scores **≥ 7/10** (grade A/B). The matched picks are:
+1. passed to the LLM as grounding so the prose cites the actual products, and
+2. returned as a structured **`top_picks`** array (each item has `barcode`,
+   `product_name`, `brand`, `category`, `score`, `grade`, `recommended` and the
+   key nutrients), plus a `top_picks_category` field naming the applied filter
+   (or `null` for all products).
+
+A category can be inferred from the question (*"best chocolates"* → the
+`chocolate` category). If **no** product clears the 7+ bar (this catalogue is
+packaged snacks), the array is **never empty** — it returns the highest-scoring
+products instead, each flagged `recommended: false`, and the prose says so
+honestly.
 
 #### Ingredient Substitution Suggestions
 When the question asks **what to use instead of an ingredient** — e.g. *"What can
@@ -824,6 +913,8 @@ Set at least one provider key in `server/.env` (see "How to run the backend"):
 | `OPENROUTER_FALLBACK_MODELS` | Comma-separated models tried in order if the primary is busy. |
 | `GEMINI_API_KEY` | Optional second provider. Free key: https://aistudio.google.com/apikey |
 | `GEMINI_MODEL` | Gemini model (default `gemini-2.0-flash`). |
+| `OPENROUTER_TIMEOUT` | Per-request OpenRouter HTTP timeout in seconds (default `12`). Lower = faster failover when a model hangs. |
+| `GEMINI_TIMEOUT` | Per-request Gemini HTTP timeout in seconds (default `12`). |
 
 **Free-tier rate limits are handled gracefully.** Free models are frequently
 rate-limited (HTTP 429). The backend:
@@ -889,18 +980,66 @@ curl -X POST http://127.0.0.1:8000/chat \
 }
 ```
 
+**Example using `curl` (top picks — structured, uses the 7+ rule):**
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+-H "Content-Type: application/json" \
+-d '{"question": "what are the top picks from all products"}'
+```
+
+**Expected JSON Response (200 OK):**
+```json
+{
+  "response": "None of the products reach the 7+/10 recommended bar, but here are the highest-scoring options:\n1. Let's Try roasted channa — 6.0/10 (grade C)\n2. Yu whole wheat noodles — 6.0/10 (grade C)\n...",
+  "barcode": null,
+  "product_found": false,
+  "source": "openrouter",
+  "model": "openai/gpt-oss-120b:free",
+  "ai_enabled": true,
+  "top_picks_category": null,
+  "top_picks": [
+    {
+      "barcode": "8906161390870",
+      "product_name": "Let's Try roasted channa",
+      "brand": "Let's Try",
+      "category": "chips",
+      "score": 6.0,
+      "grade": "C",
+      "recommended": false,
+      "sugar_g_per_serving": 1.0,
+      "protein_g_per_serving": 7.0,
+      "sodium_mg_per_serving": 32.0,
+      "fiber_g_per_serving": 5.0,
+      "image_url": "/product-images/_placeholder.svg"
+    }
+  ]
+}
+```
+
+**Example using `curl` (greeting fast-path — instant, no LLM):**
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+-H "Content-Type: application/json" \
+-d '{"question": "hi"}'
+# -> {"response": "Hi! I'm Swapify's AI nutritionist...", "source": "fast-path", ...}
+```
+
 **Response fields:**
 - `response` (string): The AI-generated (or fallback) answer.
 - `barcode` (string|null): Echoes the requested barcode.
 - `product_found` (bool): Whether product context was located.
-- `source` (string): Which provider answered — `"openrouter"`, `"gemini"`, or
-  `"fallback"` (deterministic) when every provider failed.
-- `model` (string|null): The exact model that answered (null on fallback).
+- `source` (string): Which provider answered — `"openrouter"`, `"gemini"`,
+  `"fallback"` (deterministic) when every provider failed, or `"fast-path"` for an
+  instant greeting reply.
+- `model` (string|null): The exact model that answered (null on fallback/fast-path).
 - `ai_enabled` (bool): Whether any AI provider key is configured.
 - `fallback_reason` (string): included **only** on the fallback path, explaining
   why no provider answered.
 - `substitutions` (array): included **only** when the question asks for an
   ingredient alternative; each item has `ingredient`, `alternatives` (list) and `reason`.
+- `top_picks` (array) / `top_picks_category` (string|null): included **only** for
+  top-picks questions; the structured, ranked list (see **Structured top picks**)
+  and the category filter applied (or `null` for all products).
 - `product_name`, `score`, `grade`, `ingredient_flags`: included only when a product was found.
 
 **Expected Error Response (400 Bad Request):** when `question` is empty.

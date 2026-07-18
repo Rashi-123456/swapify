@@ -26,6 +26,16 @@ try:
 except ImportError:  # pragma: no cover - import style fallback
     from . import ocr_label_scanner
 
+# Shared product-category taxonomy (Task 2). The single source of truth for how a
+# product name/brand maps to a category, used by the CSV seed here and by the ops
+# scripts (sync_db.py, import_data.py). "Better alternatives" only compares within
+# a category, so this is what keeps Maggi (noodles) from being offered as an
+# alternative to a Schezwan chutney (sauce). Same dual import style as above.
+try:
+    from category_taxonomy import guess_category
+except ImportError:  # pragma: no cover - import style fallback
+    from .category_taxonomy import guess_category
+
 # In-memory caching (Task 1C). cachetools is the preferred production library;
 # fall back to a tiny time-to-live cache with the same subset of the API we use
 # so the app still runs if the dependency is unavailable.
@@ -173,6 +183,15 @@ OPENROUTER_MODELS = [OPENROUTER_MODEL] + [
 ]
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Per-request HTTP timeouts for the LLM providers (Task 1 — chat performance).
+# These were hard-coded at 25s, so a single wedged free-tier request could hang
+# /chat for the full 25s before failover even began; with a fallback model that
+# stacks into ~25s+ for a message as trivial as "hi". A 12s ceiling still gives a
+# healthy model ample time to answer but fails over to the next model/provider far
+# sooner when one is slow. Overridable via the environment for tuning per deploy.
+OPENROUTER_TIMEOUT_S = float(os.environ.get("OPENROUTER_TIMEOUT", "12"))
+GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT", "12"))
+
 # --- Provider 2 (optional): Google Gemini (generous free tier) ----------------
 # Used as an automatic failover when every OpenRouter free model is rate-limited,
 # so the chatbot keeps giving real AI answers instead of dropping to the
@@ -253,16 +272,27 @@ def _format_uptime(seconds: float) -> str:
 
 recent_scans = []
 
+# Front-end origins that are always allowed, even if ``CORS_ORIGINS`` is not set —
+# so the deployed web app works out of the box. Extra origins can still be added
+# via the ``CORS_ORIGINS`` env var (they are merged with these).
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://swapify-three.vercel.app",  # production web frontend (Vercel)
+]
+
 # CORS origins are configurable for deployment (Task 1): set ``CORS_ORIGINS`` to a
 # comma-separated list of allowed front-end origins in production; defaults to "*"
 # for local development. When specific origins are listed, credentials are allowed;
 # with the "*" wildcard, credentials must be disabled (browsers reject "*" + creds).
+# The built-in ``DEFAULT_ALLOWED_ORIGINS`` are always merged into a non-wildcard
+# list, so the production frontend is allowed whether or not the env var is set.
 _cors_env = os.environ.get("CORS_ORIGINS", "*").strip()
-if _cors_env in ("", "*"):
+if _cors_env == "*":
     ALLOWED_ORIGINS = ["*"]
     _allow_credentials = False
 else:
-    ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    _env_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    # Merge defaults + env origins, de-duplicated and order-preserving.
+    ALLOWED_ORIGINS = list(dict.fromkeys(DEFAULT_ALLOWED_ORIGINS + _env_origins))
     _allow_credentials = True
 
 # Mobile clients (Task 1C). A phone *browser* hitting the API sends a normal
@@ -1624,12 +1654,22 @@ def find_better_alternatives(barcode: str, preferences: dict = None):
     scanned_dict = dict(scanned_product)
     scanned_score, _, _, _ = calculate_health_score_v2(scanned_dict, 1, preferences)
 
-    category = scanned_dict.get('category')
+    category = (scanned_dict.get('category') or "").strip().lower()
 
-    if category:
-        cursor.execute("SELECT * FROM products WHERE barcode != ? AND category = ?", (barcode, category))
-    else:
-        cursor.execute("SELECT * FROM products WHERE barcode != ?", (barcode,))
+    # Alternatives must come from the *same real* category, never a grab-bag. When
+    # the product has no meaningful category ("other"/unknown), we deliberately
+    # return no alternatives rather than pull unrelated products — that is exactly
+    # the bug this guard prevents (e.g. a Schezwan chutney offering Maggi noodles
+    # because both had collapsed into "other"). Better an empty list than a
+    # mismatched suggestion.
+    if not category or category == "other":
+        conn.close()
+        return []
+
+    cursor.execute(
+        "SELECT * FROM products WHERE barcode != ? AND lower(category) = ?",
+        (barcode, category),
+    )
     all_products = cursor.fetchall()
     conn.close()
 
@@ -2303,6 +2343,55 @@ def ping():
     return {"status": "ok", "uptime_seconds": round(time.time() - APP_STARTED_AT, 1)}
 
 
+@app.get("/product-count")
+def product_count():
+    """Live product-count for the "Products available" figure (Task 3).
+
+    Returns the *real* architecture instead of a hard-coded number:
+
+      - ``curated_count``  : products in Swapify's own curated database, counted
+                             live from the ``products`` table on every request.
+      - ``by_category``    : the live per-category breakdown (also proves the
+                             count is genuine, not a constant).
+      - ``external_*``     : Swapify also resolves any barcode not in the curated
+                             DB against Open Food Facts at scan time, so total
+                             *coverage* is far larger than the curated count. That
+                             catalogue has no fixed size we can assert, so it is
+                             described rather than invented.
+
+    Shaped for the frontend (Rashi): show ``curated_count`` as the headline and,
+    optionally, ``total_coverage_note`` for the "+ millions via Open Food Facts".
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM products")
+        curated = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COALESCE(NULLIF(TRIM(category), ''), 'uncategorized') AS c, "
+            "COUNT(*) FROM products GROUP BY c ORDER BY COUNT(*) DESC, c"
+        )
+        by_category = {row[0]: row[1] for row in cur.fetchall()}
+        conn.close()
+    except Exception as exc:
+        logger.warning("/product-count: database read failed: %s", exc)
+        raise HTTPException(status_code=503, detail="product count unavailable")
+
+    return {
+        "curated_count": curated,
+        "categories": len(by_category),
+        "by_category": by_category,
+        "external_source": "Open Food Facts",
+        "external_coverage": "on-demand",
+        "total_coverage_note": (
+            f"{curated} products are curated in Swapify's database; any other "
+            "barcode is resolved live against Open Food Facts at scan time, so "
+            "total reachable products also include that external catalogue."
+        ),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+
 @app.get("/compare/{barcode1}/{barcode2}")
 def compare_products(barcode1: str, barcode2: str, user_id: Optional[int] = Depends(get_current_user_optional)):
     conn = get_db_connection()
@@ -2966,7 +3055,7 @@ def _call_openrouter_model(model: str, question: str, context: str) -> str:
                 "HTTP-Referer": "https://swapify.app",
                 "X-Title": "Swapify Nutritionist",
             },
-            timeout=25,
+            timeout=OPENROUTER_TIMEOUT_S,
         )
     except requests.RequestException as exc:
         raise RuntimeError(f"OpenRouter request failed: {exc}")
@@ -3044,7 +3133,7 @@ def _call_gemini(question: str, context: str) -> str:
             params={"key": GEMINI_API_KEY},
             json=payload,
             headers={"Content-Type": "application/json"},
-            timeout=25,
+            timeout=GEMINI_TIMEOUT_S,
         )
     except requests.RequestException as exc:
         raise RuntimeError(f"Gemini request failed: {exc}")
@@ -3161,6 +3250,207 @@ def fallback_answer(question: str, product: Optional[dict]) -> str:
     return " ".join(parts)
 
 
+# ------------------------------------------------------------------------------
+# Fast-path for greetings / smalltalk (Task 1 — chat performance)
+# ------------------------------------------------------------------------------
+# A bare "hi" has no product to reason about and no question to answer, yet it used
+# to take the full LLM round-trip (and, when a free model was slow, the whole
+# provider-failover chain) — ~25s for a one-word greeting. These messages get a
+# instant, deterministic welcome instead of ever touching the network. The match
+# is deliberately conservative: it only fires when the *entire* message is a
+# greeting/thanks (optionally with a product-less "how are you"), so a real
+# question like "hi, is Maggi healthy?" still goes to the AI.
+GREETING_WORDS = {
+    "hi", "hii", "hiii", "hello", "helo", "hey", "heya", "heyy", "yo", "hola",
+    "namaste", "he", "sup", "greetings", "gm", "good morning", "good afternoon",
+    "good evening", "howdy", "hi there", "hello there", "hey there",
+}
+THANKS_WORDS = {
+    "thanks", "thank you", "thankyou", "thx", "ty", "thanku", "thank u",
+    "cool", "ok", "okay", "great", "nice", "awesome", "got it",
+}
+SMALLTALK_PATTERNS = (
+    "how are you", "how r u", "how are u", "what can you do", "who are you",
+    "what do you do", "help", "start",
+)
+
+GREETING_REPLY = (
+    "Hi! I'm Swapify's AI nutritionist. I can help you understand any packaged "
+    "food: scan or enter a barcode and ask me things like \"why did this score "
+    "so low?\", \"what's a healthier alternative?\", or \"what can I use instead "
+    "of palm oil?\". You can also ask for \"the top picks from all products\". "
+    "What would you like to check?"
+)
+
+
+def greeting_fast_reply(question: str, has_barcode: bool):
+    """Return an instant canned reply for a pure greeting/smalltalk message, else
+    None. Never fires when a product barcode is attached (that's a real product
+    question) or when the message carries anything beyond a short greeting."""
+    if has_barcode:
+        return None
+    text = (question or "").strip().lower()
+    # Strip trailing punctuation/emoji-ish characters so "hi!!!" still matches.
+    stripped = re.sub(r"[\s!.,?~]+$", "", text)
+    if not stripped:
+        return None
+    if stripped in GREETING_WORDS or stripped in THANKS_WORDS:
+        return GREETING_REPLY
+    # Very short smalltalk openers ("how are you", "what can you do", "help").
+    if len(stripped) <= 24 and any(pat in stripped for pat in SMALLTALK_PATTERNS):
+        return GREETING_REPLY
+    return None
+
+
+# ------------------------------------------------------------------------------
+# Structured "top picks" answers (Task 4 — functional AI chat)
+# ------------------------------------------------------------------------------
+# When a user asks "what are the top picks from all products" (or "best
+# chocolates", "healthiest chips"…) the chatbot should answer from the real
+# scored catalogue, not with a generic paragraph. We reuse the Home page's "7+
+# rule": a genuinely good, "Swapify Recommended" pick scores >= 7/10 (grade
+# A/B). Products clearing that bar are returned first and flagged
+# ``recommended: true``. Because this catalogue is packaged snacks (nothing may
+# reach 7), we never return an *empty* list for a valid question — we fall back
+# to the highest-scoring products available and flag them ``recommended: false``,
+# so the answer is always structured and useful rather than blank. The list is
+# returned to the client AND fed to the LLM as grounding so its prose cites the
+# actual products.
+TOP_PICKS_INTENT_PATTERNS = (
+    "top pick", "top picks", "top choice", "best pick", "best product",
+    "best products", "best option", "healthiest", "recommend", "recommendation",
+    "top rated", "best rated", "highest scoring", "highest score", "top product",
+    "what should i buy", "which product", "what to buy", "best food", "top food",
+    "show me the best", "what are the best", "good products",
+)
+
+# Question-category words that are too generic to be a real product filter — a
+# match here means "across all products", not that single fallback bucket.
+_GENERIC_PICK_CATEGORIES = {"other", "drink", "bar"}
+
+
+def is_top_picks_question(question: str) -> bool:
+    """True when the message is asking for the best/top/healthiest products."""
+    text = (question or "").lower()
+    return any(pat in text for pat in TOP_PICKS_INTENT_PATTERNS)
+
+
+def _pick_category_from_question(question: str):
+    """Infer an optional category filter from the question (e.g. "best
+    chocolates" -> "chocolate"). Returns None for an all-products query."""
+    cat = guess_category(question)
+    if cat in _GENERIC_PICK_CATEGORIES:
+        return None
+    return cat
+
+
+def _score_catalogue(category=None):
+    """Score every product (optionally within ``category``); healthiest first.
+
+    Returns a list of pick dicts, each carrying ``recommended`` = does it clear
+    the 7+ rule. Reuses the same generic (non-personalized) scoring the Home page
+    and product pages use, so a "top pick" here is identical to the score shown
+    everywhere else.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if category:
+        cursor.execute("SELECT * FROM products WHERE lower(category) = ?", (category,))
+    else:
+        cursor.execute("SELECT * FROM products")
+    rows = cursor.fetchall()
+    conn.close()
+
+    scored = []
+    for row in rows:
+        p = dict(row)
+        score, grade, _, _ = calculate_health_score_v2(p, 1, None)
+        scored.append({
+            "barcode": p["barcode"],
+            "product_name": p["product_name"],
+            "brand": p.get("brand"),
+            "category": p.get("category"),
+            "score": score,
+            "grade": grade,
+            "recommended": score >= RECOMMENDED_MIN_SCORE,  # the "7+ rule"
+            "sugar_g_per_serving": p.get("sugar_g_per_serving"),
+            "protein_g_per_serving": p.get("protein_g_per_serving"),
+            "sodium_mg_per_serving": p.get("sodium_mg_per_serving"),
+            "fiber_g_per_serving": p.get("fiber_g_per_serving"),
+            "image_url": image_or_placeholder(p.get("image_url")),
+        })
+    scored.sort(key=lambda x: (-x["score"], (x["product_name"] or "").lower()))
+    return scored
+
+
+def find_top_picks(question: str, limit: int = 5):
+    """Return (picks, category) — the top products for the question.
+
+    Applies the Home page's 7+ rule: products scoring >= 7 are the recommended
+    picks. If none clear 7 (this catalogue is packaged snacks), we return the
+    highest-scoring products instead, each flagged ``recommended: false``, so the
+    answer is always a real, ranked list. ``category`` is the applied filter (or
+    None for all products); an unknown/empty category widens to the full
+    catalogue.
+    """
+    category = _pick_category_from_question(question)
+    scored = _score_catalogue(category)
+    if not scored and category is not None:  # unknown/empty category -> all
+        category = None
+        scored = _score_catalogue(None)
+
+    recommended = [p for p in scored if p["recommended"]]
+    picks = (recommended or scored)[:limit]
+    return picks, category
+
+
+def build_top_picks_context(picks, category) -> str:
+    """Render the picks into a grounding block so the LLM cites real products."""
+    scope = f"in the {category} category" if category else "across all products"
+    if not picks:
+        return f"TOP PICKS: no products are available {scope}."
+    any_recommended = any(p["recommended"] for p in picks)
+    if any_recommended:
+        header = (f"TOP PICKS (products scoring 7+/10, i.e. Swapify-Recommended, "
+                  f"{scope}; use these to answer):")
+    else:
+        header = (f"TOP PICKS ({scope}): none reach the 7+/10 recommended bar, so "
+                  "these are the highest-scoring options — say so honestly:")
+    lines = [header]
+    for p in picks:
+        lines.append(
+            f"- {p['product_name']} ({p.get('brand') or 'n/a'}): "
+            f"score {p['score']}/10 grade {p['grade']}"
+            f"{' [Recommended]' if p['recommended'] else ''}, "
+            f"sugar {p.get('sugar_g_per_serving')}g, "
+            f"protein {p.get('protein_g_per_serving')}g, "
+            f"sodium {p.get('sodium_mg_per_serving')}mg per serving"
+        )
+    return "\n".join(lines)
+
+
+def fallback_top_picks_answer(picks, category) -> str:
+    """Deterministic structured reply for a top-picks question (no LLM needed)."""
+    scope = f"{category} products" if category else "all products"
+    none_scope = f"the {category} products" if category else "the products"
+    if not picks:
+        return f"No products are currently available in {scope}."
+    any_recommended = any(p["recommended"] for p in picks)
+    if any_recommended:
+        header = f"Here are the top picks from {scope} (health score 7+/10):"
+    else:
+        header = (f"None of {none_scope} reach the 7+/10 recommended bar, but here "
+                  "are the highest-scoring options:")
+    lines = [header]
+    for i, p in enumerate(picks, 1):
+        tag = " ✅ Recommended" if p["recommended"] else ""
+        lines.append(
+            f"{i}. {p['product_name']} — {p['score']}/10 (grade {p['grade']})"
+            + (f", {p['brand']}" if p.get("brand") else "") + tag
+        )
+    return "\n".join(lines)
+
+
 @app.post("/chat")
 def chat(req: ChatRequest):
     """AI nutritionist chatbot. Accepts a free-text question and an optional
@@ -3174,6 +3464,20 @@ def chat(req: ChatRequest):
     if not req.question or not req.question.strip():
         raise HTTPException(status_code=400, detail="question is required")
 
+    # --- Fast-path: pure greeting / smalltalk (Task 1) -----------------------
+    # Answer instantly, without touching any product data or the LLM, so a bare
+    # "hi" returns in milliseconds instead of waiting out the provider chain.
+    fast = greeting_fast_reply(req.question, bool(req.barcode))
+    if fast is not None:
+        return {
+            "response": fast,
+            "barcode": req.barcode,
+            "product_found": False,
+            "source": "fast-path",
+            "model": None,
+            "ai_enabled": AI_ENABLED,
+        }
+
     product = get_scored_product(req.barcode) if req.barcode else None
     context = build_product_context(product)
 
@@ -3183,6 +3487,16 @@ def chat(req: ChatRequest):
     sub_context = build_substitution_context(sub_targets)
     if sub_context:
         context = f"{context}\n\n{sub_context}"
+
+    # --- "Top picks" questions (Task 4) --------------------------------------
+    # Answer from the real scored catalogue using the Home page's 7+ rule, both as
+    # a structured list on the response and as grounding so the LLM cites the
+    # actual products instead of replying generically.
+    top_picks = None
+    top_picks_category = None
+    if is_top_picks_question(req.question):
+        top_picks, top_picks_category = find_top_picks(req.question, limit=5)
+        context = f"{context}\n\n{build_top_picks_context(top_picks, top_picks_category)}"
 
     used_ai = False
     provider = None
@@ -3197,7 +3511,9 @@ def chat(req: ChatRequest):
         # endpoint always responds, and surface *why* for the operator/client.
         fallback_reason = str(exc)
         logger.warning("/chat falling back to rule-based answer: %s", fallback_reason)
-        if sub_targets:
+        if top_picks is not None:
+            answer = fallback_top_picks_answer(top_picks, top_picks_category)
+        elif sub_targets:
             answer = fallback_substitution_answer(sub_targets, product)
         else:
             answer = fallback_answer(req.question, product)
@@ -3221,6 +3537,10 @@ def chat(req: ChatRequest):
             }
             for t in sub_targets
         ]
+    if top_picks is not None:
+        # Structured, machine-readable picks for the frontend to render as cards.
+        response["top_picks"] = top_picks
+        response["top_picks_category"] = top_picks_category
     if product is not None:
         response["product_name"] = product.get("product_name")
         response["score"] = product.get("score")
@@ -6000,12 +6320,10 @@ def get_experiment_analytics(
 # host with no swapify.db comes up with the schema created and the catalogue
 # loaded, with zero manual steps. On an already-populated database this is a no-op.
 
-# The 12 nutrient/identity columns the products table needs, kept in sync with
-# create_db.py and sync_db.py (the single CSV schema).
-_CSV_CATEGORY_KEYWORDS = (
-    "bar", "yogurt", "chips", "milkshake", "cereals", "museli", "noodles",
-    "chocolate", "drink", "biscuits", "cookie", "mixture", "pie",
-)
+# Category is derived from the product name/brand via the shared taxonomy in
+# category_taxonomy.py (Task 2) — the single source of truth used by app.py,
+# sync_db.py and import_data.py alike, so "better alternatives" never mix
+# categories (e.g. noodles offered as an alternative to a chutney).
 
 
 def _csv_num(value):
@@ -6018,15 +6336,6 @@ def _csv_num(value):
         return float(match.group()) if match else 0.0
     except ValueError:
         return 0.0
-
-
-def _csv_category(name):
-    """Best-effort category from a product name (mirrors import_data.py)."""
-    name = (name or "").lower()
-    for cat in _CSV_CATEGORY_KEYWORDS:
-        if cat in name:
-            return cat
-    return "other"
 
 
 def _seed_products_from_csv(cursor):
@@ -6060,8 +6369,8 @@ def _seed_products_from_csv(cursor):
                 "saturated_fat_g_per_serving, sodium_mg_per_serving, "
                 "protein_g_per_serving, fiber_g_per_serving, "
                 "calories_kcal_per_serving) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (barcode, product_name, brand, _csv_category(product_name), serving,
-                 sugar, sat_fat, sodium, protein, fiber, calories),
+                (barcode, product_name, brand, guess_category(product_name, brand),
+                 serving, sugar, sat_fat, sodium, protein, fiber, calories),
             )
             inserted += cursor.rowcount
     return inserted
