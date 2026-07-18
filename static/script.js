@@ -3740,7 +3740,7 @@ function renderStreakGoalCard(){
 
   el.innerHTML='<div class="streak-goal-outer">'
     +'<div class="streak-goal-top-row">'
-    +'<div class="streak-flame-block"><span class="streak-flame-icon">\uD83D\uDD25</span><div><div class="streak-flame-num">'+stats.streak+'</div><div class="streak-flame-lbl">'+streakText+'</div></div></div>'
+    +'<div class="streak-flame-block"><span class="streak-flame-icon'+(stats.streak>0?' active':'')+'">\uD83D\uDD25</span><div><div class="streak-flame-num">'+stats.streak+'</div><div class="streak-flame-lbl">'+streakText+'</div></div></div>'
     +'<div class="goal-stepper"><span class="goal-stepper-label">Daily goal:</span>'
     +'<button class="goal-stepper-btn" onclick="adjustDailyGoal(-1)">\u2212</button>'
     +'<span class="goal-stepper-num">'+goal+'</span>'
