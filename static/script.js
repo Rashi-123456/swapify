@@ -481,6 +481,7 @@ async function performRealLogin(email,pass){
     var data=await res.json(); // {access_token, token_type}
     var profile=await fetchBackendProfile(data.access_token);
     saveAuth({name:(profile&&profile.username)||email.split('@')[0],email:email,token:data.access_token,userId:profile&&profile.id});
+    await fetchPreferencesFromBackend();
     closeAuthModal(); openProfilePanel();
   }catch(networkErr){
     // Backend unreachable — fall back to a local-only pseudo-account so the
@@ -714,6 +715,26 @@ async function syncPreferencesToBackend(){
     });
     if(!res.ok) handleAuthExpiry(res);
   }catch(e){ /* offline/unreachable backend — local prefs still apply */ }
+}
+
+// Pulls the account's saved preferences down from the backend (GET /preferences)
+// and applies them locally. Called right after a real (non-local-only) login so
+// a user who set preferences on another device gets them here too, instead of
+// preferences silently only ever traveling one-way (local -> backend).
+var PREFS_GET_URL=BACKEND_BASE_URL+'/preferences';
+async function fetchPreferencesFromBackend(){
+  if(!currentUser||!currentUser.token||currentUser.localOnly) return;
+  try{
+    var res=await fetch(PREFS_GET_URL,{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); return; }
+    var data=await res.json();
+    if(data&&data.preferences&&typeof data.preferences==='object'){
+      userPrefs=data.preferences;
+      localStorage.setItem(PREF_KEY,JSON.stringify(userPrefs));
+      renderPrefStrip();
+      syncPrefToggles();
+    }
+  }catch(e){ /* offline/unreachable backend — local prefs remain source of truth */ }
 }
 
 /* ══════════════════════════════════════════════════════
@@ -4740,6 +4761,7 @@ calcBadgeProgress(); // check for any already-earned badges silently
 refreshCompareUI();
 maybeShowOnboarding();
 loadAuth();
+if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); }
 renderHomeDashboard();
 renderStreakGoalCard();
 renderQuickStats();

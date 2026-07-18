@@ -989,7 +989,7 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
    ══════════════════════════════════════ */
 .dash-section{background:var(--card-bg);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px 20px;margin-bottom:16px;border:1px solid var(--border);}
 .dash-welcome-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
-.dash-welcome-title{font-family:'Poppins',sans-serif;font-size:1.05rem;font-weight:800;color:var(--text);}
+.dash-welcome-title{font-family:'Sora',sans-serif;font-size:1.08rem;font-weight:800;color:var(--text);}
 .dash-welcome-sub{font-size:0.8rem;color:var(--text-muted);margin-top:3px;}
 .dash-quick-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px;}
 .dash-quick-btn{background:var(--card-bg);border:1px solid var(--border);border-radius:16px;padding:14px 6px;display:flex;flex-direction:column;align-items:center;gap:8px;font-family:'Inter',sans-serif;font-size:0.68rem;font-weight:600;color:var(--text);cursor:pointer;transition:all var(--transition);text-align:center;}
