@@ -136,12 +136,6 @@ function renderSettingsPage(){
       + '<button class="settings-danger-btn" onclick="clearFavoritesSettings()">Clear Favorites</button>'
       + '<button class="settings-danger-btn" onclick="resetPreferencesSettings()">Reset Dietary Preferences</button>'
     + '</div>'
-    + '<div class="settings-block">'
-      + '<div class="settings-block-title">Account</div>'
-      + (currentUser
-          ? '<button class="settings-logout-btn" onclick="logoutFromSettings()">Sign Out</button>'
-          : '<button class="settings-logout-btn" onclick="openAuthModal()">Sign In / Register</button>')
-    + '</div>'
     + '<div class="settings-version">Swapify · Scan. Compare. Eat Smarter.<br>Version 1.0.0</div>';
 }
 
@@ -647,8 +641,9 @@ function savePrefs(){
   localStorage.setItem(PREF_KEY,JSON.stringify(userPrefs)); closePrefPanel(); renderPrefStrip();
   syncPreferencesToBackend();
   if(lastScannedProduct) loadAlternatives(lastScannedProduct);
+  showToast('Preferences saved!','success');
 }
-function resetPrefs(){ userPrefs={}; localStorage.removeItem(PREF_KEY); document.querySelectorAll('#prefOverlay .pref-toggle').forEach(function(el){el.classList.remove('active');}); renderPrefStrip(); }
+function resetPrefs(){ userPrefs={}; localStorage.removeItem(PREF_KEY); document.querySelectorAll('#prefOverlay .pref-toggle').forEach(function(el){el.classList.remove('active');}); renderPrefStrip(); showToast('Preferences reset.','info'); }
 function activePrefsArray(){ return Object.keys(userPrefs).filter(function(k){return userPrefs[k];}); }
 function renderPrefStrip(){
   var active=activePrefsArray(), strip=document.getElementById('activePrefStrip'), chips=document.getElementById('activePrefChips');
@@ -1678,7 +1673,7 @@ function pnfReportMissing(barcode) {
                 alert('Could not submit the report \u2014 please try again.');
                 return;
             }
-            alert('Thanks! We\u2019ve logged this product for review.');
+            showToast('Thanks! We\u2019ve logged this product for review.','success');
         } catch (e) {
             alert('Backend unreachable \u2014 could not submit the report.');
         }
@@ -2969,7 +2964,7 @@ function toggleRecsPanel(){
 
 async function renderRecsPanel(forceRefresh){
   var panel=document.getElementById('recommendationsPanel');
-  panel.innerHTML='<div class="rec-section"><div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> AI Recommendations</div><span class="rec-ai-badge">AI ✦</span></div><div class="rec-loading">Personalising suggestions…</div></div>';
+  panel.innerHTML='<div class="rec-section"><div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> AI Recommendations</div><span class="rec-ai-badge">AI ✦</span></div>'+skeletonRows(3)+'</div>';
   try{
     var recs=await loadRecommendations(forceRefresh);
     var h=loadHistory();
@@ -3368,6 +3363,7 @@ async function submitProductRating(){
   saveMyOwnRatings(myRatings);
 
   closeRatingModal();
+  showToast('Rating saved — thanks!','success');
 
   try{
     var res=await fetch(BACKEND_BASE_URL+'/rate-product',{
@@ -4037,6 +4033,7 @@ async function joinChallenge(id){
       return;
     }
   }catch(e){ alert('Backend unreachable — could not join the challenge.'); return; }
+  showToast('You\u2019re in! Challenge joined.','success');
   if (typeof CURRENT_PAGE !== 'undefined' && CURRENT_PAGE === 'challenges') { renderChallengesPage(); }
   else { renderChallengesPanel(); }
   renderHomeDashboard();
@@ -4086,14 +4083,14 @@ function switchLeaderboardPeriod(period){
 async function renderLeaderboardPage(){
   var dst=document.getElementById('leaderboardPanelFullPage');
   if(!dst) return;
-  dst.innerHTML='<div class="cat-section"><div class="loading-spinner">Loading leaderboard…</div></div>';
+  dst.innerHTML='<div class="cat-section">'+skeletonRows(5)+'</div>';
   var body=await buildLeaderboardHTML();
   dst.innerHTML='<div class="cat-section">'+body+'</div>';
 }
 async function renderChallengesPage(){
   var dst=document.getElementById('challengesPanelFullPage');
   if(!dst) return;
-  dst.innerHTML='<div class="cat-section"><div class="loading-spinner">Loading challenges…</div></div>';
+  dst.innerHTML='<div class="cat-section">'+skeletonRows(4)+'</div>';
   var body=await buildChallengesListHTML();
   dst.innerHTML='<div class="cat-section">'+body+'</div>';
 }
@@ -4105,9 +4102,13 @@ async function renderChallengesPanel(){
     +'<button class="chal-tab-btn'+(_challengesActiveTab==='challenges'?' active':'')+'" onclick="switchChallengesTab(\'challenges\')">\uD83C\uDFC6 Challenges</button>'
     +'<button class="chal-tab-btn'+(_challengesActiveTab==='leaderboard'?' active':'')+'" onclick="switchChallengesTab(\'leaderboard\')">\uD83D\uDCCA Leaderboard</button>'
     +'</div>';
-  panel.innerHTML='<div class="cat-section">'+tabsHTML+'<div class="loading-spinner">Loading…</div></div>';
+  panel.innerHTML='<div class="cat-section">'+tabsHTML+skeletonRows(4)+'</div>';
   var body=_challengesActiveTab==='challenges'?await buildChallengesListHTML():await buildLeaderboardHTML();
   panel.innerHTML='<div class="cat-section">'+tabsHTML+body+'</div>';
+}
+
+function _checkIconSmall(){
+  return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;"><polyline points="20 6 9 17 4 12"/></svg>';
 }
 
 async function buildChallengesListHTML(){
@@ -4118,11 +4119,11 @@ async function buildChallengesListHTML(){
     var p=c.progress;
     var progressHTML=p
       ? '<div class="chal-progress-track"><div class="chal-progress-fill'+(p.completed?' done':'')+'" style="width:'+p.percent+'%;"></div></div>'
-        +'<div class="chal-progress-text"><span>'+p.current+' / '+p.target+'</span><span>'+(p.completed?'\u2705 Complete!':p.percent+'%')+'</span></div>'
+        +'<div class="chal-progress-text"><span>'+p.current+' / '+p.target+'</span><span>'+(p.completed?_checkIconSmall()+' Complete!':p.percent+'%')+'</span></div>'
       : '<div class="chal-progress-text"><span>'+(c.participant_count||0)+' participant'+(c.participant_count===1?'':'s')+' so far</span></div>';
     return '<div class="chal-card'+(c.joined?' joined':'')+'">'
       +'<div class="chal-card-top"><div class="chal-card-icon-name"><span class="chal-card-icon">\uD83C\uDFC6</span><div><div class="chal-card-name">'+(c.title||'Challenge')+'</div><div class="chal-card-desc">'+(c.description||'')+'</div></div></div>'
-      +'<button class="btn-join-challenge'+(c.joined?' joined-btn':'')+'" onclick="joinChallenge('+c.id+')" '+(c.joined?'disabled':'')+'>'+(c.joined?'\u2713 Joined':'Join Challenge')+'</button></div>'
+      +'<button class="btn-join-challenge'+(c.joined?' joined-btn':'')+'" onclick="joinChallenge('+c.id+')" '+(c.joined?'disabled':'')+'>'+(c.joined?_checkIconSmall()+' Joined':'Join Challenge')+'</button></div>'
       +progressHTML
       +(c.badge?'<div class="chal-reward-pill">\uD83C\uDF81 '+c.badge+' badge on completion</div>':'')
       +'</div>';
@@ -4421,7 +4422,7 @@ function buildReviewsSectionHTML(barcode,productName){
     ? '<div class="reviews-summary-row"><div class="reviews-summary-num">'+avg.toFixed(1)+'</div><div><div class="reviews-summary-stars">'+starsDisplayHTML(avg)+'</div><div class="reviews-summary-count">'+reviews.length+' review'+(reviews.length>1?'s':'')+'</div></div></div>'
     : '';
   var listHTML= !cached
-    ? '<div class="reviews-empty">Loading reviews…</div>'
+    ? skeletonRows(2)
     : (reviews.length ? reviews.map(function(r){ return buildSingleReviewHTML(barcode,r); }).join('') : '<div class="reviews-empty">No reviews yet — share your experience with this product!</div>');
   var safeName=(productName||'').replace(/'/g,"\\'");
   return '<div class="reviews-section-card" id="reviewsSectionCard-'+barcode+'">'
@@ -4557,6 +4558,7 @@ async function submitReview(){
 
   // Confirmed success — now it's safe to close and refresh.
   closeReviewModal();
+  showToast('Review posted — thanks for sharing!','success');
   await refreshReviewsSection(barcode);
 }
 
@@ -4963,6 +4965,56 @@ if (_origScanProduct) {
 }
 
 /* ── Copy score with visible toast ─────────────────────── */
+/* ══════════════════════════════════════════════════════
+   POLISH PASS — skeleton loader helper
+   Used by any panel that fetches before it can render (recommendations,
+   leaderboard, challenges, reviews) instead of a plain "Loading…" line.
+   ══════════════════════════════════════════════════════ */
+function skeletonRows(n){
+  var rows='';
+  for(var i=0;i<(n||3);i++){
+    rows+='<div class="skel-row"><div class="skeleton skel-circle"></div><div class="skel-lines"><div class="skeleton skel-line w70"></div><div class="skeleton skel-line w45"></div></div></div>';
+  }
+  return rows;
+}
+
+/* ══════════════════════════════════════════════════════
+   POLISH PASS — shared toast notification system
+   Native alert() dialogs are jarring and dated (they block the whole page,
+   look like the browser rather than the app, and can't be dismissed by
+   clicking elsewhere). This is the app's standard, professional replacement
+   for confirmations that don't require the user to acknowledge before
+   continuing — success/info messages surface here now instead.
+   ══════════════════════════════════════════════════════ */
+var _toastQueue=[],_toastShowing=false;
+var TOAST_ICONS={
+  success:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  error:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+  info:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="11"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+};
+function showToast(message,type){
+  type=(type==='error'||type==='info')?type:'success';
+  _toastQueue.push({message:message,type:type});
+  if(!_toastShowing) _drainToastQueue();
+}
+function _drainToastQueue(){
+  var next=_toastQueue.shift();
+  if(!next){ _toastShowing=false; return; }
+  _toastShowing=true;
+  var old=document.getElementById('swapifyToast');
+  if(old) old.remove();
+  var t=document.createElement('div');
+  t.id='swapifyToast';
+  t.className='swapify-toast toast-'+next.type;
+  t.innerHTML='<span class="swapify-toast-icon">'+TOAST_ICONS[next.type]+'</span><span>'+next.message+'</span>';
+  document.body.appendChild(t);
+  requestAnimationFrame(function(){ t.classList.add('show'); });
+  setTimeout(function(){
+    t.classList.remove('show');
+    setTimeout(function(){ t.remove(); _drainToastQueue(); },250);
+  },2600);
+}
+
 function copyScoreToClipboard(score) {
   var txt = String(score);
   if (navigator.clipboard) {
@@ -4973,15 +5025,7 @@ function copyScoreToClipboard(score) {
     try { document.execCommand('copy'); } catch(e) {}
     document.body.removeChild(ta);
   }
-  /* Show toast */
-  var t = document.createElement('div');
-  t.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);'
-    + 'background:#00a875;color:#fff;font-family:"DM Mono",monospace;font-size:0.8rem;'
-    + 'padding:10px 24px;border-radius:100px;z-index:9999;'
-    + 'box-shadow:0 8px 24px rgba(0,168,117,.35);white-space:nowrap;animation:fadeUp .25s ease;';
-  t.textContent = '\u2713 Score copied!';
-  document.body.appendChild(t);
-  setTimeout(function(){ t.remove(); }, 2200);
+  showToast('Score copied!','success');
 }
 
 /* ── Header button nav targets ─────────────────────────── */
