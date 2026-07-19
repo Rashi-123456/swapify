@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Swapify — Know What's Really In Your Food</title>
 <meta name="description" content="Scan any packaged food barcode for an instant, transparent 1–10 health score with a full ingredient breakdown — no fabricated numbers, ever.">
 <meta name="theme-color" content="#0B3B3A">
@@ -180,7 +180,7 @@
           <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
           <circle cx="12" cy="13" r="4"/>
         </svg>
-        Camera
+        <span class="btn-camera-label">Camera</span>
       </button>
     </div>
 
@@ -223,27 +223,27 @@
 
     <div class="quick-label">Low-score samples</div>
     <div class="quick-chips">
-      <div class="chip" onclick="quickScan('8901058000532')">8901058000532<small>Coca Cola</small></div>
-      <div class="chip" onclick="quickScan('7622300441937')">7622300441937<small>Cadbury</small></div>
-      <div class="chip" onclick="quickScan('8901088101018')">8901088101018<small>MTR Upma</small></div>
-      <div class="chip" onclick="quickScan('5000159461122')">5000159461122<small>Snickers</small></div>
-      <div class="chip" onclick="quickScan('8901058005783')">8901058005783<small>Maggi</small></div>
-      <div class="chip" onclick="quickScan('8901551101264')">8901551101264<small>Sprite</small></div>
+      <div class="chip" onclick="quickScan('8901058000532', true)">8901058000532<small>Coca Cola</small></div>
+      <div class="chip" onclick="quickScan('7622300441937', true)">7622300441937<small>Cadbury</small></div>
+      <div class="chip" onclick="quickScan('8901088101018', true)">8901088101018<small>MTR Upma</small></div>
+      <div class="chip" onclick="quickScan('5000159461122', true)">5000159461122<small>Snickers</small></div>
+      <div class="chip" onclick="quickScan('8901058005783', true)">8901058005783<small>Maggi</small></div>
+      <div class="chip" onclick="quickScan('8901551101264', true)">8901551101264<small>Sprite</small></div>
     </div>
     <div class="quick-label">High-score samples</div>
     <div class="quick-chips">
-      <div class="chip" onclick="quickScan('8906097760011')">8906097760011<small>True Oats</small></div>
-      <div class="chip" onclick="quickScan('8906068720018')">8906068720018<small>Max Protein</small></div>
-      <div class="chip" onclick="quickScan('3017620422003')">3017620422003<small>Nutella (OFF)</small></div>
+      <div class="chip" onclick="quickScan('8906097760011', true)">8906097760011<small>True Oats</small></div>
+      <div class="chip" onclick="quickScan('8906068720018', true)">8906068720018<small>Max Protein</small></div>
+      <div class="chip" onclick="quickScan('3017620422003', true)">3017620422003<small>Nutella (OFF)</small></div>
     </div>
 
-    <div class="src-note" style="margin-top:12px;">
+    <div class="src-note" style="display:none;">
       <span style="color:#3949ab;">■</span> Backend&nbsp;·&nbsp;
       <span style="color:#00a875;">■</span> Swapify CSV&nbsp;·&nbsp;
       <span style="color:#e65100;">■</span> Open Food Facts
     </div>
-    <div id="csvStatus"></div>
-    <div id="backendStatus"></div>
+    <div id="csvStatus" style="display:none;"></div>
+    <div id="backendStatus" style="display:none;"></div>
   </div>
 </div>
 </div>

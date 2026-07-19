@@ -68,9 +68,11 @@ function toggleNotifPref(key){
 function clearScanHistorySettings(){
   if(!confirm('Clear your entire scan history? This cannot be undone.')) return;
   localStorage.removeItem(HISTORY_KEY);
+  localStorage.removeItem(LIFETIME_SCANS_KEY);
   if(typeof renderProfilePanel==='function') renderProfilePanel();
   if(typeof renderStreakGoalCard==='function') renderStreakGoalCard();
   if(typeof renderHomeDashboard==='function') renderHomeDashboard();
+  if(typeof renderQuickStats==='function') renderQuickStats();
   renderSettingsPage();
 }
 function clearFavoritesSettings(){
@@ -235,6 +237,50 @@ function saveFavoritesList(list){ localStorage.setItem(FAV_KEY,JSON.stringify(li
 
 function isInFavorites(barcode){ return loadFavorites().some(function(f){ return f.barcode===barcode; }); }
 
+// ── Favorites backend sync ──
+// Favorites used to be pure localStorage, which is why they looked
+// "per-browser" while things like Challenges (backend-tracked) looked the
+// same everywhere. The backend already has full favorites support
+// (POST/DELETE/GET /favorites) — it just wasn't being called. Wired up the
+// same way preferences are: push on every change, pull-and-merge on login.
+var FAVORITES_URL=BACKEND_BASE_URL+'/favorites';
+function syncFavoriteAddToBackend(barcode){
+  if(!currentUser||!currentUser.token||currentUser.localOnly) return;
+  fetch(FAVORITES_URL,{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({barcode:barcode})})
+    .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+function syncFavoriteRemoveToBackend(barcode){
+  if(!currentUser||!currentUser.token||currentUser.localOnly) return;
+  fetch(FAVORITES_URL+'/'+encodeURIComponent(barcode),{method:'DELETE',headers:getAuthHeaders()})
+    .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+// Pulls the account's favorites down from the backend so a second browser/
+// device sees the same saved list, not an empty one. Any favorites that only
+// exist locally (e.g. added while offline, or added as a guest before this
+// login) are pushed up first so nothing gets silently dropped, then the
+// backend's list — now a superset — becomes the local source of truth.
+async function fetchFavoritesFromBackend(){
+  if(!currentUser||!currentUser.token||currentUser.localOnly) return;
+  var local=loadFavorites();
+  try{
+    var res=await fetch(FAVORITES_URL,{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); return; }
+    var backendList=await res.json();
+    if(!Array.isArray(backendList)) return;
+    var backendBarcodes={};
+    backendList.forEach(function(f){ backendBarcodes[f.barcode]=true; });
+    var localOnly=local.filter(function(f){ return !backendBarcodes[f.barcode]; });
+    localOnly.forEach(function(f){ syncFavoriteAddToBackend(f.barcode); });
+    var merged=backendList.map(function(f){
+      return{barcode:f.barcode,name:f.product_name,brand:f.brand,score:f.health_score,grade:f.grade,addedAt:f.added_at?new Date(f.added_at).getTime():Date.now()};
+    }).concat(localOnly);
+    saveFavoritesList(merged);
+    if(favsPanelOpen) renderFavoritesPanel();
+    var btn=document.getElementById('favBtn');
+    if(btn&&lastScannedProduct) updateFavBtn(isInFavorites(lastScannedProduct.barcode));
+  }catch(e){ /* offline/unreachable backend — local favorites remain usable */ }
+}
+
 function toggleFavorite(barcode, name, brand, score, grade){
   var favs=loadFavorites();
   var idx=favs.findIndex(function(f){ return f.barcode===barcode; });
@@ -242,11 +288,13 @@ function toggleFavorite(barcode, name, brand, score, grade){
     favs.splice(idx,1);
     saveFavoritesList(favs);
     updateFavBtn(false);
+    syncFavoriteRemoveToBackend(barcode);
   } else {
     favs.unshift({barcode:barcode,name:name,brand:brand,score:score,grade:grade,addedAt:Date.now()});
     if(favs.length>50) favs=favs.slice(0,50);
     saveFavoritesList(favs);
     updateFavBtn(true);
+    syncFavoriteAddToBackend(barcode);
   }
   if(favsPanelOpen) renderFavoritesPanel();
 }
@@ -294,12 +342,17 @@ function removeFavorite(barcode){
   var favs=loadFavorites().filter(function(f){ return f.barcode!==barcode; });
   saveFavoritesList(favs);
   renderFavoritesPanel();
+  syncFavoriteRemoveToBackend(barcode);
   // Update fav button if this is the current product
   if(lastScannedProduct&&lastScannedProduct.barcode===barcode) updateFavBtn(false);
 }
 
 function clearAllFavorites(){
-  if(confirm('Clear all favorites?')){ saveFavoritesList([]); renderFavoritesPanel(); updateFavBtn(false); }
+  if(confirm('Clear all favorites?')){
+    var favs=loadFavorites();
+    favs.forEach(function(f){ syncFavoriteRemoveToBackend(f.barcode); });
+    saveFavoritesList([]); renderFavoritesPanel(); updateFavBtn(false);
+  }
 }
 
 /* ══════════════════════════════════════════════════════
@@ -315,7 +368,36 @@ function toggleWeeklyPanel(){
 }
 
 function renderWeeklyPanel(){
-  var stats=calcDashboardStats();
+  _renderWeeklyPanelCore(calcDashboardStats());
+  // If logged in with a real (non-local-only) account, the backend's own
+  // /weekly-summary — built from scan_history, which every authenticated
+  // scan already writes to — is the account's true cross-device weekly
+  // data. Re-render with it once it arrives so this panel matches no
+  // matter which browser/device the person is on, instead of only ever
+  // reflecting this browser's localStorage.
+  if(currentUser&&currentUser.token&&!currentUser.localOnly){
+    fetchWeeklySummaryFromBackend();
+  }
+}
+var WEEKLY_SUMMARY_URL=BACKEND_BASE_URL+'/weekly-summary';
+async function fetchWeeklySummaryFromBackend(){
+  try{
+    var res=await fetch(WEEKLY_SUMMARY_URL,{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); return; }
+    var data=await res.json();
+    // Translate the backend's {date, average_score} daily_trends into the
+    // same {score, timestamp} shape calcDashboardStats().history already
+    // uses, so _renderWeeklyPanelCore's chart-building code runs completely
+    // unchanged regardless of which source the data came from.
+    var synthHistory=(data.daily_trends||[]).map(function(d){
+      return{score:d.average_score,timestamp:new Date(d.date+'T12:00:00').getTime()};
+    });
+    _renderWeeklyPanelCore({total:data.total_scans||0,history:synthHistory});
+    var wpSrc=document.getElementById('weeklyPanel'), wpDst=document.getElementById('weeklyPanelPage');
+    if(wpSrc&&wpDst) wpDst.innerHTML=wpSrc.innerHTML;
+  }catch(e){ /* offline/unreachable backend — the local render already stands */ }
+}
+function _renderWeeklyPanelCore(stats){
   var panel=document.getElementById('weeklyPanel');
 
   if(stats.total===0){
@@ -482,6 +564,7 @@ async function performRealLogin(email,pass){
     var profile=await fetchBackendProfile(data.access_token);
     saveAuth({name:(profile&&profile.username)||email.split('@')[0],email:email,token:data.access_token,userId:profile&&profile.id});
     await fetchPreferencesFromBackend();
+    await fetchFavoritesFromBackend();
     closeAuthModal(); openProfilePanel();
   }catch(networkErr){
     // Backend unreachable — fall back to a local-only pseudo-account so the
@@ -729,7 +812,14 @@ async function fetchPreferencesFromBackend(){
     if(!res.ok){ handleAuthExpiry(res); return; }
     var data=await res.json();
     if(data&&data.preferences&&typeof data.preferences==='object'){
-      userPrefs=data.preferences;
+      // Merge rather than replace: the backend's VALID_PREFERENCES list is
+      // currently narrower than the frontend's preference set (it doesn't
+      // yet know about low_calorie / vegetarian / diabetic_friendly /
+      // heart_healthy), so a full overwrite would silently erase those
+      // locally-saved flags every time this runs. Backend-recognized keys
+      // still win (that's the whole point of syncing), unrecognized
+      // frontend-only keys are left exactly as they were locally.
+      userPrefs=Object.assign({},userPrefs,data.preferences);
       localStorage.setItem(PREF_KEY,JSON.stringify(userPrefs));
       renderPrefStrip();
       syncPrefToggles();
@@ -808,8 +898,8 @@ function stopCamera(){
 function setCameraButtonState(active){
   var btn=document.getElementById('btnCamera');
   btn.innerHTML=active
-    ?'<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Close'
-    :'<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> Camera';
+    ?'<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> <span class="btn-camera-label">Close</span>'
+    :'<svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> <span class="btn-camera-label">Camera</span>';
 }
 function showCameraError(title,msg,tips){ stopCamera(); tips=tips||{}; document.getElementById('cameraErrorTitle').textContent=title||'Camera unavailable'; document.getElementById('cameraErrorMsg').textContent=msg||'Please enter the barcode manually.'; document.getElementById('tipPermission').style.display=tips.permission?'':'none'; document.getElementById('tipReload').style.display=tips.reload?'':'none'; document.getElementById('tipHTTPS').style.display=tips.https?'':'none'; document.getElementById('cameraError').classList.add('visible'); var inp=document.getElementById('barcodeInput'); inp.placeholder='Type barcode here ↵'; inp.classList.add('fallback-highlight'); inp.addEventListener('focus',function f(){inp.classList.remove('fallback-highlight');inp.placeholder='Enter barcode, say it, or scan…';inp.removeEventListener('focus',f);}); setTimeout(function(){inp.focus();},120); }
 function hideCameraError(){document.getElementById('cameraError').classList.remove('visible');}
@@ -1366,9 +1456,9 @@ function searchCategory(cat,excludeBarcode,minScore){
    SCAN PRODUCT
    ══════════════════════════════════════════════════════ */
 inputEl.addEventListener('keydown',function(e){if(e.key==='Enter')scanProduct();});
-function quickScan(c){inputEl.value=c;scanProduct();}
+function quickScan(c, isSample){ inputEl.value=c; scanProduct(isSample); }
 
-async function scanProduct() {
+async function scanProduct(isSample) {
 
     resultEl.innerHTML = "";
     resultEl.className = "";
@@ -1410,18 +1500,23 @@ async function scanProduct() {
 
         logScanEvent(barcode, { event: 'scan_result', outcome: 'found', source: prod.type || 'swapify', score: prod.result ? prod.result.score : null });
 
-        addToHistory({
-            barcode: prod.barcode,
-            name: (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product',
-            score: prod.result.score,
-            grade: prod.result.grade,
-            timestamp: new Date().toISOString()
-        });
+        if (!isSample) {
+            addToHistory({
+                barcode: prod.barcode,
+                name: (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product',
+                score: prod.result.score,
+                grade: prod.result.grade,
+                timestamp: new Date().toISOString()
+            });
+        }
 
 if (prod.type === "off") {
     renderOFF(prod);
 } else {
     renderSwapify(prod);
+}
+if (isSample) {
+    resultEl.insertAdjacentHTML('afterbegin', '<div class="sample-preview-note">\uD83D\uDC41\uFE0F Preview of a sample product — not saved to your scan history</div>');
 }
 
 await loadAlternatives(prod);
@@ -2587,7 +2682,73 @@ function navMonthly(delta){
   renderMonthlyPanel();
 }
 
+var MONTHLY_REPORT_URL=BACKEND_BASE_URL+'/monthly-report';
+var _monthlyBackendCache={};
+var _monthlyBackendFetchInFlight={};
+function monthKeyFor(offset){
+  var b=monthBounds(offset);
+  return b.first.getFullYear()+'-'+String(b.first.getMonth()+1).padStart(2,'0');
+}
+// Translates a backend /monthly-report payload (+ the previous month's report,
+// used only to compute "vs last month" trend the same way the local calc
+// does) into the exact same shape calcMonthlyStats() already returns, so
+// every renderer downstream (panel HTML, Chart.js trend chart) works
+// completely unchanged regardless of which source the data came from.
+function _translateMonthlyReport(data,prevData,offset){
+  var catCounts={};
+  (data.category_breakdown||[]).forEach(function(c){ catCounts[c.category]=c.count; });
+  var history=(data.daily_trends||[]).map(function(d){
+    return{score:d.average_score,timestamp:new Date(d.date+'T12:00:00').getTime()};
+  });
+  var avg=data.total_scans?data.average_score:null;
+  var prevAvg=(prevData&&prevData.total_scans)?prevData.average_score:null;
+  var trend='flat',trendDiff=0;
+  if(avg!==null&&prevAvg!==null){
+    trendDiff=Math.round((avg-prevAvg)*10)/10;
+    if(trendDiff>0.3) trend='up'; else if(trendDiff<-0.3) trend='down'; else trend='flat';
+  }
+  return{
+    bounds:monthBounds(offset),
+    total:data.total_scans||0,
+    avg:avg,
+    best:data.best_product?{name:data.best_product.product_name,score:data.best_product.score,grade:data.best_product.grade}:null,
+    worst:data.worst_product?{name:data.worst_product.product_name,score:data.worst_product.score,grade:data.worst_product.grade}:null,
+    catCounts:catCounts,
+    trend:trend,
+    trendDiff:trendDiff,
+    history:history
+  };
+}
+async function fetchMonthlyReportFromBackend(offset){
+  try{
+    var res=await fetch(MONTHLY_REPORT_URL+'?month='+monthKeyFor(offset),{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); _monthlyBackendFetchInFlight[offset]=false; return; }
+    var data=await res.json();
+    var prevData=null;
+    try{
+      var prevRes=await fetch(MONTHLY_REPORT_URL+'?month='+monthKeyFor(offset-1),{headers:getAuthHeaders()});
+      if(prevRes.ok) prevData=await prevRes.json();
+    }catch(e){ /* trend just falls back to 'flat' without previous-month data */ }
+    _monthlyBackendCache[offset]=_translateMonthlyReport(data,prevData,offset);
+    _monthlyBackendFetchInFlight[offset]=false;
+    if(monthlyOffset===offset){
+      renderMonthlyPanel();
+      var mpSrc=document.getElementById('monthlyPanel'), mpDst=document.getElementById('monthlyPanelPage');
+      if(mpSrc&&mpDst){
+        mpDst.innerHTML=mpSrc.innerHTML;
+        var visibleCanvas=mpDst.querySelector('#monthlyTrendCanvas');
+        if(visibleCanvas) renderMonthlyTrendChart(calcMonthlyStats(offset),visibleCanvas);
+      }
+    }
+  }catch(e){ _monthlyBackendFetchInFlight[offset]=false; /* offline/unreachable backend — local render already stands */ }
+}
+
 function calcMonthlyStats(offset){
+  if(_monthlyBackendCache.hasOwnProperty(offset)) return _monthlyBackendCache[offset];
+  if(currentUser&&currentUser.token&&!currentUser.localOnly&&!_monthlyBackendFetchInFlight[offset]){
+    _monthlyBackendFetchInFlight[offset]=true;
+    fetchMonthlyReportFromBackend(offset);
+  }
   var bounds=monthBounds(offset);
   var h=loadHistory().filter(function(item){
     var t=new Date(item.timestamp).getTime();
@@ -4761,7 +4922,7 @@ calcBadgeProgress(); // check for any already-earned badges silently
 refreshCompareUI();
 maybeShowOnboarding();
 loadAuth();
-if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); }
+if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); }
 renderHomeDashboard();
 renderStreakGoalCard();
 renderQuickStats();
@@ -4770,6 +4931,7 @@ renderQuickStats();
 var _origAddToHistory=addToHistory;
 addToHistory=function(entry){
   _origAddToHistory(entry);
+  if(typeof _monthlyBackendCache!=='undefined'){ delete _monthlyBackendCache[0]; _monthlyBackendFetchInFlight[0]=false; }
   calcBadgeProgress(); // check for new badges on every scan
   // Refresh recs cache
   _recsCache=null;
@@ -4780,8 +4942,8 @@ addToHistory=function(entry){
 
 // Refresh the dashboard's greeting + personalized/generic split on login/logout
 var _origSaveAuth=saveAuth, _origClearAuth=clearAuth;
-saveAuth=function(user){ _origSaveAuth(user); renderHomeDashboard(); };
-clearAuth=function(){ _origClearAuth(); renderHomeDashboard(); };
+saveAuth=function(user){ _origSaveAuth(user); _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; renderHomeDashboard(); };
+clearAuth=function(){ _origClearAuth(); _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; renderHomeDashboard(); };
 
 // Refresh trending fallback + categories once the CSV finishes loading (it
 // loads async and may finish after the first render calls above)

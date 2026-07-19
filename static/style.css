@@ -14,8 +14,8 @@
   --text-muted:#8898b8;--shadow:0 8px 32px rgba(0,0,0,0.4);--shadow-hover:0 16px 40px rgba(0,0,0,0.5);
 }
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;text-size-adjust:100%;}
-body{font-family:'Inter',sans-serif;background:var(--bg);min-height:100vh;color:var(--text);transition:background var(--transition),color var(--transition);line-height:1.6;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%;text-size-adjust:100%;background:var(--bg);overscroll-behavior-y:contain;}
+body{font-family:'Inter',sans-serif;background:var(--bg);min-height:100vh;color:var(--text);transition:background var(--transition),color var(--transition);line-height:1.6;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overscroll-behavior-y:contain;overflow-x:hidden;}
 /* Cross-browser reset (Task 8) — iOS Safari and some Android WebViews apply
    native platform chrome to buttons/inputs (rounded corners, gradients,
    default fonts) unless appearance is explicitly reset, which otherwise
@@ -73,8 +73,8 @@ header{background:var(--navy-deep);padding:0 28px;height:64px;display:flex;align
 
 /* ── CONTAINER / CARD ── */
 .container{max-width:800px;margin:16px auto 60px;padding:0 16px;position:relative;z-index:2;}
-.card{background:var(--card-bg);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px 22px;margin-bottom:16px;border:1px solid var(--border);transition:background var(--transition),border-color var(--transition),box-shadow var(--transition);}
-.card:hover{box-shadow:var(--shadow-hover);}
+.card{background:var(--card-bg);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px 22px;margin-bottom:16px;border:1px solid var(--border);transition:background var(--transition),border-color var(--transition),box-shadow var(--transition),transform var(--transition);}
+.card:hover{box-shadow:var(--shadow-hover);transform:translateY(-4px);}
 .card-title{font-size:0.68rem;font-family:'DM Mono',monospace;letter-spacing:2px;color:var(--gray);text-transform:uppercase;margin-bottom:14px;}
 
 /* ── INPUT ROW ── */
@@ -137,7 +137,53 @@ button:active{transform:translateY(0) scale(0.99);}
 /* ── CAMERA ── */
 #cameraSection{display:none;margin-top:14px;border-radius:var(--radius-sm);overflow:hidden;border:2px solid var(--lime);position:relative;}
 #cameraSection.active{display:block;}
-#reader{width:100%;background:#000;min-height:10px;}
+#reader{
+  width:100%;
+  height:clamp(220px,52vw,420px);
+  max-height:60vh;
+  background:#000;
+  border-radius:var(--radius-sm);
+  overflow:hidden;
+  position:relative;
+}
+/* html5-qrcode sets its own inline width/height on these, computed from the
+   device's native camera stream — which is exactly why the scanner looked a
+   different size on every browser/device. Force them to fill the fixed,
+   responsive box above instead, cropping (not stretching) the feed. */
+#reader video,#reader canvas,#reader img,#reader__scan_region,#reader__scan_region video{
+  width:100%!important;
+  height:100%!important;
+  max-width:100%!important;
+  max-height:100%!important;
+  object-fit:cover!important;
+  display:block;
+  position:absolute!important;
+  top:0!important;
+  left:0!important;
+}
+/* The camera-select dropdown / torch button html5-qrcode injects below the
+   video — unstyled by default, so it visually clashed with the rest of the
+   design system. */
+#reader__dashboard_section,#reader__dashboard{
+  background:var(--card-bg)!important;
+  padding:8px 10px!important;
+  font-family:'Inter',sans-serif!important;
+}
+#reader__dashboard_section select,#reader__dashboard_section button{
+  font-family:'Inter',sans-serif!important;
+  border-radius:8px!important;
+  border:1.5px solid var(--border)!important;
+  padding:6px 10px!important;
+  background:var(--off-white)!important;
+  color:var(--text)!important;
+  cursor:pointer;
+}
+@media(max-width:540px){
+  #reader{height:clamp(200px,62vw,340px);}
+}
+@media(min-width:769px){
+  #reader{height:340px;}
+}
 .camera-overlay-bar{background:var(--navy-deep);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .camera-overlay-bar span{font-family:'DM Mono',monospace;font-size:0.78rem;color:var(--lime);letter-spacing:1px;}
 .btn-camera-close{background:rgba(255,107,107,0.2);color:var(--coral);border:none;border-radius:8px;padding:6px 14px;font-size:0.78rem;font-family:'DM Mono',monospace;cursor:pointer;transition:all var(--transition);transform:none!important;box-shadow:none!important;}
@@ -351,6 +397,7 @@ button:active{transform:translateY(0) scale(0.99);}
 .img-loading-wrap{width:140px;height:140px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;border-radius:16px;background:linear-gradient(90deg,var(--off-white) 25%,var(--border) 50%,var(--off-white) 75%);background-size:200% 100%;animation:imgShimmer 1.4s ease infinite;border:1.5px solid var(--border);}
 @keyframes imgShimmer{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
 
+.sample-preview-note{background:rgba(59,107,255,0.08);border:1px solid rgba(59,107,255,0.2);color:var(--accent);font-family:'Inter',sans-serif;font-size:0.8rem;font-weight:600;padding:10px 14px;border-radius:var(--radius-xs);margin-bottom:14px;}
 .loading-spinner{display:flex;align-items:center;justify-content:center;gap:12px;padding:36px;color:var(--gray);font-family:'DM Mono',monospace;font-size:0.86rem;}
 .loading-spinner::before{content:'';width:18px;height:18px;border:3px solid var(--border);border-top-color:var(--lime);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0;}
 @keyframes spin{to{transform:rotate(360deg);}}
@@ -1293,8 +1340,17 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
   header{padding:0 14px;}
   .hero{padding:30px 14px 50px;}
   .card,#result.visible{padding:18px 14px;}
-  .input-row{flex-wrap:wrap;}
+  .input-row{flex-wrap:wrap;gap:10px;}
+  .input-row .input-wrap{flex-basis:100%;}
   .input-row .btn-scan-primary,.input-row .btn-camera,.input-row .btn-mic{flex:1;justify-content:center;}
+}
+@media(max-width:420px){
+  .btn-camera-label{display:none;}
+  .input-row .btn-camera{flex:0 0 auto;padding:13px 16px;}
+  .input-row .btn-mic{flex:0 0 auto;}
+  .input-row .btn-scan-primary{flex:1 1 auto;}
+}
+@media(max-width:540px){
   .score-legend{grid-template-columns:repeat(3,1fr);}
   .alt-grid{flex-direction:column;}
   .alt-card{max-width:100%;}
@@ -1477,7 +1533,7 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
    Card selectors below intentionally layer on top of any existing hover rules
    (later rules win on the same specificity, so the lift stays consistent app-wide). */
 .alt-card:hover,.rec-card:hover,.dash-rec-card:hover,.pnf-btn:hover,.pnf-similar-card:hover,.score-breakdown-card:hover{box-shadow:var(--shadow-hover);}
-button:active:not(:disabled),.btn:active:not(:disabled),.scan-btn:active,.pnf-btn:active,.pnf-similar-card:active,.nav-btn:active{transform:scale(0.96);}
+button:active:not(:disabled),.btn:active:not(:disabled),.scan-btn:active,.pnf-btn:active,.pnf-similar-card:active,.nav-btn:active{transform:scale(0.95);}
 
 /* Respect users who've asked for less motion */
 @media (prefers-reduced-motion: reduce){
