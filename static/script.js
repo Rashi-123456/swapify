@@ -54,6 +54,23 @@ function resolveBackendUrl(url){
    ══════════════════════════════════════════════════════ */
 (function(){var t=localStorage.getItem('swapify-theme')||'light';document.documentElement.setAttribute('data-theme',t);updateThemeIcon(t);})();
 function toggleTheme(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('swapify-theme',n);updateThemeIcon(n);var sw=document.getElementById('settingsDarkModeSwitch');if(sw) sw.classList.toggle('on',n==='dark');}
+
+// ── Hamburger nav menu (collapses the header's 10 nav links once they no
+// longer fit inline, instead of letting them silently overflow/wrap) ──
+function toggleMobileNav(){
+  var menu=document.getElementById('headerNavMenu'), btn=document.getElementById('hamburgerBtn'), bg=document.getElementById('headerNavBackdrop');
+  var opening=!menu.classList.contains('open');
+  menu.classList.toggle('open',opening);
+  btn.classList.toggle('active',opening);
+  bg.classList.toggle('visible',opening);
+  document.body.style.overflow=opening?'hidden':'';
+}
+function closeMobileNav(){
+  var menu=document.getElementById('headerNavMenu'), btn=document.getElementById('hamburgerBtn'), bg=document.getElementById('headerNavBackdrop');
+  menu.classList.remove('open'); btn.classList.remove('active'); bg.classList.remove('visible');
+  document.body.style.overflow='';
+}
+document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeMobileNav(); });
 function updateThemeIcon(t){var i=document.getElementById('themeIcon');if(i) i.textContent=t==='dark'?'☀️':'🌙';}
 
 /* ══════════════════════════════════════════════════════
@@ -565,6 +582,7 @@ async function performRealLogin(email,pass){
     saveAuth({name:(profile&&profile.username)||email.split('@')[0],email:email,token:data.access_token,userId:profile&&profile.id});
     await fetchPreferencesFromBackend();
     await fetchFavoritesFromBackend();
+    await fetchShoppingListFromBackend();
     closeAuthModal(); openProfilePanel();
   }catch(networkErr){
     // Backend unreachable — fall back to a local-only pseudo-account so the
@@ -4357,6 +4375,26 @@ async function buildLeaderboardHTML(){
 // of truth for what's "on the list"; backend-scored data enriches display
 // once each sync completes.
 var SHOPPING_LIST_URL=BACKEND_BASE_URL+'/shopping-list';
+async function fetchShoppingListFromBackend(){
+  if(!currentUser||!currentUser.token||currentUser.localOnly) return;
+  try{
+    var res=await fetch(SHOPPING_LIST_URL+'/mine',{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); return; }
+    var data=await res.json();
+    if(!data||!data.id) return; // no list saved on this account yet
+    var backendBarcodes=(data.items||[]).map(function(it){ return it.barcode; });
+    var local=loadCartItems();
+    var merged=backendBarcodes.concat(local.filter(function(b){ return backendBarcodes.indexOf(b)===-1; }));
+    saveCartItems(merged);
+    saveCartListId(data.id);
+    _cartSyncedItems=data.items||[];
+    _cartOptimizeData=null;
+    if(shoppingListPanelOpen) renderShoppingListPanel();
+    // If anything was local-only (added while offline or as a guest),
+    // push the merged list back up so the backend has the full picture too.
+    if(merged.length!==backendBarcodes.length) syncShoppingListToBackend();
+  }catch(e){ /* offline/unreachable backend — local cart remains usable */ }
+}
 var CART_ITEMS_KEY='swapify-shopping-list-items-v1';
 var CART_LIST_ID_KEY='swapify-shopping-list-id-v1';
 var CART_LIST_NAME_KEY='swapify-shopping-list-name-v1';
@@ -4922,7 +4960,7 @@ calcBadgeProgress(); // check for any already-earned badges silently
 refreshCompareUI();
 maybeShowOnboarding();
 loadAuth();
-if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); }
+if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); fetchShoppingListFromBackend(); }
 renderHomeDashboard();
 renderStreakGoalCard();
 renderQuickStats();
