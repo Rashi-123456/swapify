@@ -625,10 +625,22 @@ def profile(user_id: int = Depends(get_current_user)):
     cursor = conn.cursor()
     cursor.execute("SELECT id, username, email, created_at FROM users WHERE id = ?", (user_id,))
     row = cursor.fetchone()
-    conn.close()
     if not row:
+        conn.close()
         raise HTTPException(status_code=404, detail="User not found")
-    return dict(row)
+
+    # True cross-device lifetime scan count for this account. The frontend's
+    # "All-Time Scans" stat previously came only from a per-browser
+    # localStorage counter, which under/over-counted for anyone who scanned
+    # from more than one device or browser — this is the authoritative
+    # number it now reconciles against.
+    cursor.execute("SELECT COUNT(*) AS cnt FROM scan_history WHERE user_id = ?", (user_id,))
+    total_scans = cursor.fetchone()["cnt"]
+    conn.close()
+
+    result = dict(row)
+    result["total_scans"] = total_scans
+    return result
 
 
 def fetch_off_product(barcode: str):

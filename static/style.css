@@ -41,10 +41,31 @@ header{background:var(--navy-deep);padding:0 28px;height:64px;display:flex;align
 .header-nav-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:99;}
 .header-nav-backdrop.visible{display:block;animation:fadeInBackdrop 0.25s ease;}
 @keyframes fadeInBackdrop{from{opacity:0;}to{opacity:1;}}
-/* Below this, ten nav links + logo + badge + auth + theme toggle no longer
-   fit the 64px header without wrapping into a messy second row — collapse
-   them behind a hamburger instead of letting sections silently overflow. */
-@media(max-width:1180px){
+/* Ten nav links + logo + badge + auth + theme toggle need real estate that
+   varies with zoom level, OS display-scaling, and font-loading — a single
+   fixed px breakpoint can't reliably predict when they stop fitting the
+   64px header. That's what let "Settings" get cut off on ordinary laptop
+   widths while the hamburger never appeared: the content was overflowing
+   well above the old 1180px cutoff. Collapse is now primarily driven by JS
+   actually measuring overflow (checkHeaderNavFit() in script.js), which
+   toggles the .nav-collapsed class below. The @media block further down is
+   only a safety net covering true small/no-JS screens and the brief instant
+   before JS's first measurement runs, so nothing ever paints
+   uncollapsed-and-cut-off. */
+html.nav-collapsed .header-nav-menu{
+  display:flex;flex-direction:column;align-items:stretch;gap:4px;flex-wrap:nowrap;
+  position:fixed;top:64px;right:0;width:min(320px,86vw);max-height:calc(100vh - 64px);
+  background:var(--navy-deep);padding:14px;z-index:100;overflow-y:auto;
+  box-shadow:-12px 0 40px rgba(0,0,0,0.3);
+  transform:translateX(100%);transition:transform 0.3s cubic-bezier(.4,0,.2,1);
+}
+html.nav-collapsed .header-nav-menu.open{transform:translateX(0);}
+html.nav-collapsed .header-nav-menu .btn-pref-header{width:100%;justify-content:flex-start;padding:12px 14px;font-size:0.78rem;}
+html.nav-collapsed .hamburger-btn{display:flex;}
+/* Safety net: always collapse below 900px even before JS has measured (or
+   if JS is disabled) — this width is comfortably too narrow for the full
+   nav regardless of fonts/zoom, so it's safe to hardcode. */
+@media(max-width:900px){
   .header-nav-menu{
     display:flex;flex-direction:column;align-items:stretch;gap:4px;flex-wrap:nowrap;
     position:fixed;top:64px;right:0;width:min(320px,86vw);max-height:calc(100vh - 64px);
@@ -423,7 +444,6 @@ button:active{transform:translateY(0) scale(0.99);}
 .img-loading-wrap{width:140px;height:140px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;border-radius:16px;background:linear-gradient(90deg,var(--off-white) 25%,var(--border) 50%,var(--off-white) 75%);background-size:200% 100%;animation:imgShimmer 1.4s ease infinite;border:1.5px solid var(--border);}
 @keyframes imgShimmer{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
 
-.sample-preview-note{background:rgba(59,107,255,0.08);border:1px solid rgba(59,107,255,0.2);color:var(--accent);font-family:'Inter',sans-serif;font-size:0.8rem;font-weight:600;padding:10px 14px;border-radius:var(--radius-xs);margin-bottom:14px;}
 .loading-spinner{display:flex;align-items:center;justify-content:center;gap:12px;padding:36px;color:var(--gray);font-family:'DM Mono',monospace;font-size:0.86rem;}
 .loading-spinner::before{content:'';width:18px;height:18px;border:3px solid var(--border);border-top-color:var(--lime);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0;}
 @keyframes spin{to{transform:rotate(360deg);}}

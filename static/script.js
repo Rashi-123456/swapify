@@ -56,7 +56,57 @@ function resolveBackendUrl(url){
 function toggleTheme(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('swapify-theme',n);updateThemeIcon(n);var sw=document.getElementById('settingsDarkModeSwitch');if(sw) sw.classList.toggle('on',n==='dark');}
 
 // ── Hamburger nav menu (collapses the header's 10 nav links once they no
-// longer fit inline, instead of letting them silently overflow/wrap) ──
+// longer fit inline, instead of letting them silently overflow/get cut off) ──
+//
+// This used to be a single fixed @media(max-width:1180px) breakpoint, which
+// undercounted the real width the 10 links + logo + badge + login/avatar +
+// theme toggle need. On plenty of ordinary laptop screens (1280–1600px CSS
+// width — very common once you account for OS display scaling, non-maximized
+// windows, etc.) that meant the row was ALREADY wider than the header at
+// widths well above 1180px, so it silently overflowed (the last button,
+// "Settings", got clipped off the right edge) while the hamburger — which
+// only ever appears below 1180px — never showed up to fix it.
+//
+// Instead of guessing another fixed number, we measure: temporarily force
+// the nav back into its normal single-row layout, check whether it's wider
+// than the space the header actually has for it, and toggle the
+// .nav-collapsed class on <html> accordingly. This is correct at any zoom
+// level, any OS scaling, any viewport width, and stays correct if labels
+// ever change length (e.g. translations) or more nav items are added later.
+var _navFitCheckQueued=false;
+function checkHeaderNavFit(){
+  if(_navFitCheckQueued) return;
+  _navFitCheckQueued=true;
+  requestAnimationFrame(function(){
+    _navFitCheckQueued=false;
+    var header=document.querySelector('header'), menu=document.getElementById('headerNavMenu');
+    if(!header||!menu) return;
+    var html=document.documentElement;
+    var wasOpen=menu.classList.contains('open');
+    var wasCollapsed=html.classList.contains('nav-collapsed');
+    // Measure with the nav forced into row layout — collapsed mode takes it
+    // out of normal flow (position:fixed), which would make this check
+    // meaningless, so always re-test from the uncollapsed state.
+    html.classList.remove('nav-collapsed');
+    var overflowing=header.scrollWidth>header.clientWidth+1;
+    if(overflowing){
+      html.classList.add('nav-collapsed');
+      if(wasOpen) menu.classList.add('open'); // preserve open/closed state across the re-check
+    } else if(wasCollapsed&&wasOpen){
+      // Was open in collapsed mode and no longer needs to collapse at all —
+      // close the slide-out panel instead of leaving it visually orphaned.
+      closeMobileNav();
+    }
+  });
+}
+window.addEventListener('resize',checkHeaderNavFit);
+window.addEventListener('orientationchange',checkHeaderNavFit);
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(checkHeaderNavFit).catch(function(){});
+document.addEventListener('DOMContentLoaded',checkHeaderNavFit);
+// In case DOMContentLoaded already fired by the time this script (loaded at
+// the bottom of the page) runs.
+if(document.readyState==='interactive'||document.readyState==='complete') checkHeaderNavFit();
+
 function toggleMobileNav(){
   var menu=document.getElementById('headerNavMenu'), btn=document.getElementById('hamburgerBtn'), bg=document.getElementById('headerNavBackdrop');
   var opening=!menu.classList.contains('open');
@@ -551,6 +601,7 @@ function renderHeaderAuth(){
   } else {
     area.innerHTML='<button class="btn-login-header" onclick="openAuthModal()">Login</button>';
   }
+  if(typeof checkHeaderNavFit==='function') checkHeaderNavFit();
 }
 function openAuthModal(){ document.getElementById('authOverlay').classList.add('active'); document.body.style.overflow='hidden'; switchAuthTab('login'); clearAuthError(); }
 function closeAuthModal(){ document.getElementById('authOverlay').classList.remove('active'); document.body.style.overflow=''; }
@@ -709,6 +760,21 @@ function renderProfilePanel(){
   else { document.getElementById('streakText').textContent='Start scanning to build a streak!'; document.getElementById('streakSub').textContent='Scan any product daily to build your streak'; }
   renderBarChart(stats.history.slice(0,7).reverse());
   renderRecentScans(stats.history.slice(0,6));
+  // The count above is this browser's local lifetime counter, which only
+  // reflects scans made on THIS device — it can under-report for anyone
+  // who's also scanned from another browser/device on the same account,
+  // which is what made it drift from Weekly/Monthly's backend-synced totals.
+  // Reconcile it with the account's true cross-device count once it loads.
+  if(typeof isReallyLoggedIn==='function'&&isReallyLoggedIn()) syncProfileTotalScansFromBackend();
+}
+async function syncProfileTotalScansFromBackend(){
+  try{
+    var profile=await fetchBackendProfile(currentUser.token);
+    if(profile&&typeof profile.total_scans==='number'){
+      var el=document.getElementById('statTotalScans');
+      if(el) el.textContent=profile.total_scans;
+    }
+  }catch(e){ /* offline/unreachable backend — the local lifetime count already stands */ }
 }
 function renderBarChart(items){
   var el=document.getElementById('scoreBarChart');
@@ -1518,23 +1584,18 @@ async function scanProduct(isSample) {
 
         logScanEvent(barcode, { event: 'scan_result', outcome: 'found', source: prod.type || 'swapify', score: prod.result ? prod.result.score : null });
 
-        if (!isSample) {
-            addToHistory({
-                barcode: prod.barcode,
-                name: (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product',
-                score: prod.result.score,
-                grade: prod.result.grade,
-                timestamp: new Date().toISOString()
-            });
-        }
+        addToHistory({
+            barcode: prod.barcode,
+            name: (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product',
+            score: prod.result.score,
+            grade: prod.result.grade,
+            timestamp: new Date().toISOString()
+        });
 
 if (prod.type === "off") {
     renderOFF(prod);
 } else {
     renderSwapify(prod);
-}
-if (isSample) {
-    resultEl.insertAdjacentHTML('afterbegin', '<div class="sample-preview-note">\uD83D\uDC41\uFE0F Preview of a sample product — not saved to your scan history</div>');
 }
 
 await loadAlternatives(prod);
@@ -2698,6 +2759,26 @@ function navMonthly(delta){
   monthlyOffset+=delta;
   if(monthlyOffset>0) monthlyOffset=0; // can't go into the future
   renderMonthlyPanel();
+  syncMonthlyPanelToVisiblePage();
+}
+
+// #monthlyPanel is a hidden (display:none) template; #monthlyPanelPage is
+// the visible clone actually shown on the Monthly Report page. Anything
+// that changes the report's content (navigating months, a fresh backend
+// fetch landing, etc.) has to copy the template's HTML across and redraw
+// the Chart.js trend chart onto the VISIBLE canvas — document.getElementById
+// always resolves to the hidden template's canvas first (it comes first in
+// the page's markup), so re-rendering without an explicit canvas reference
+// draws onto a canvas nobody can see. navMonthly() used to skip this step
+// entirely, so the ‹ › month-navigation arrows silently did nothing visible
+// for anyone not on the backend-synced path (i.e. every guest/local-only
+// user).
+function syncMonthlyPanelToVisiblePage(){
+  var mpSrc=document.getElementById('monthlyPanel'), mpDst=document.getElementById('monthlyPanelPage');
+  if(!mpSrc||!mpDst) return;
+  mpDst.innerHTML=mpSrc.innerHTML;
+  var visibleCanvas=mpDst.querySelector('#monthlyTrendCanvas');
+  if(visibleCanvas) renderMonthlyTrendChart(calcMonthlyStats(monthlyOffset),visibleCanvas);
 }
 
 var MONTHLY_REPORT_URL=BACKEND_BASE_URL+'/monthly-report';
@@ -2749,14 +2830,10 @@ async function fetchMonthlyReportFromBackend(offset){
     }catch(e){ /* trend just falls back to 'flat' without previous-month data */ }
     _monthlyBackendCache[offset]=_translateMonthlyReport(data,prevData,offset);
     _monthlyBackendFetchInFlight[offset]=false;
+    if(offset===0&&document.getElementById('quickStats')) renderQuickStats();
     if(monthlyOffset===offset){
       renderMonthlyPanel();
-      var mpSrc=document.getElementById('monthlyPanel'), mpDst=document.getElementById('monthlyPanelPage');
-      if(mpSrc&&mpDst){
-        mpDst.innerHTML=mpSrc.innerHTML;
-        var visibleCanvas=mpDst.querySelector('#monthlyTrendCanvas');
-        if(visibleCanvas) renderMonthlyTrendChart(calcMonthlyStats(offset),visibleCanvas);
-      }
+      syncMonthlyPanelToVisiblePage();
     }
   }catch(e){ _monthlyBackendFetchInFlight[offset]=false; /* offline/unreachable backend — local render already stands */ }
 }
@@ -3884,6 +3961,21 @@ function renderQuickStats(){
     var d=new Date(item.timestamp);
     return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();
   }).length;
+  // For a real (non-local-only) logged-in account, prefer the backend's
+  // authoritative count for the current month — the same one the Monthly
+  // Report page uses (calcMonthlyStats/fetchMonthlyReportFromBackend). The
+  // local-only count above only reflects scans made on THIS browser, so for
+  // anyone using more than one device (or who ever cleared this browser's
+  // storage) it used to drift from — and look inconsistent with — the
+  // Monthly Report's "Scans This Month" for the exact same period.
+  if(typeof isReallyLoggedIn==='function'&&isReallyLoggedIn()){
+    if(typeof _monthlyBackendCache!=='undefined'&&_monthlyBackendCache.hasOwnProperty(0)){
+      scansThisMonth=_monthlyBackendCache[0].total;
+    } else if(typeof _monthlyBackendFetchInFlight!=='undefined'&&!_monthlyBackendFetchInFlight[0]){
+      _monthlyBackendFetchInFlight[0]=true;
+      fetchMonthlyReportFromBackend(0);
+    }
+  }
   // Task 2B: the catalogue count is genuinely live (never hardcoded — csvCount
   // comes from the loaded database), but "Products available" undersold real
   // coverage since a scan also falls back to Open Food Facts when a barcode
@@ -5050,18 +5142,8 @@ function showPage(page) {
 
     /* Monthly report — copy HTML then re-initialise Chart.js on the new canvas */
     renderMonthlyPanel();
-    var mpSrc = document.getElementById('monthlyPanel');
-    var mpDst = document.getElementById('monthlyPanelPage');
-    if (mpSrc && mpDst) {
-      mpDst.innerHTML = mpSrc.innerHTML;
-      /* Give the browser a tick to paint the canvas, then draw the chart */
-      setTimeout(function(){
-        if (typeof renderMonthlyTrendChart === 'function' && typeof calcMonthlyStats === 'function') {
-          var visibleCanvas = mpDst.querySelector('#monthlyTrendCanvas');
-          renderMonthlyTrendChart(calcMonthlyStats(typeof monthlyOffset !== 'undefined' ? monthlyOffset : 0), visibleCanvas);
-        }
-      }, 100);
-    }
+    /* Give the browser a tick to paint the canvas, then draw the chart */
+    setTimeout(function(){ syncMonthlyPanelToVisiblePage(); }, 100);
   }
 
   if (page === 'favorites') {
