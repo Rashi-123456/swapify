@@ -1582,9 +1582,9 @@ function searchCategory(cat,excludeBarcode,minScore){
    SCAN PRODUCT
    ══════════════════════════════════════════════════════ */
 inputEl.addEventListener('keydown',function(e){if(e.key==='Enter')scanProduct();});
-function quickScan(c, isSample){ inputEl.value=c; scanProduct(isSample); }
+function quickScan(c){ inputEl.value=c; scanProduct(); }
 
-async function scanProduct(isSample) {
+async function scanProduct() {
 
     resultEl.innerHTML = "";
     resultEl.className = "";
