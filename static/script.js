@@ -311,9 +311,9 @@ function isInFavorites(barcode){ return loadFavorites().some(function(f){ return
 // (POST/DELETE/GET /favorites) — it just wasn't being called. Wired up the
 // same way preferences are: push on every change, pull-and-merge on login.
 var FAVORITES_URL=BACKEND_BASE_URL+'/favorites';
-function syncFavoriteAddToBackend(barcode){
+function syncFavoriteAddToBackend(barcode,name,brand,score,grade){
   if(!currentUser||!currentUser.token||currentUser.localOnly) return;
-  fetch(FAVORITES_URL,{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({barcode:barcode})})
+  fetch(FAVORITES_URL,{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({barcode:barcode,product_name:name,brand:brand,health_score:score,grade:grade})})
     .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
 }
 function syncFavoriteRemoveToBackend(barcode){
@@ -337,7 +337,7 @@ async function fetchFavoritesFromBackend(){
     var backendBarcodes={};
     backendList.forEach(function(f){ backendBarcodes[f.barcode]=true; });
     var localOnly=local.filter(function(f){ return !backendBarcodes[f.barcode]; });
-    localOnly.forEach(function(f){ syncFavoriteAddToBackend(f.barcode); });
+    localOnly.forEach(function(f){ syncFavoriteAddToBackend(f.barcode,f.name,f.brand,f.score,f.grade); });
     var merged=backendList.map(function(f){
       return{barcode:f.barcode,name:f.product_name,brand:f.brand,score:f.health_score,grade:f.grade,addedAt:f.added_at?new Date(f.added_at).getTime():Date.now()};
     }).concat(localOnly);
@@ -361,7 +361,7 @@ function toggleFavorite(barcode, name, brand, score, grade){
     if(favs.length>50) favs=favs.slice(0,50);
     saveFavoritesList(favs);
     updateFavBtn(true);
-    syncFavoriteAddToBackend(barcode);
+    syncFavoriteAddToBackend(barcode,name,brand,score,grade);
   }
   if(favsPanelOpen) renderFavoritesPanel();
 }
@@ -633,7 +633,9 @@ async function performRealLogin(email,pass){
     saveAuth({name:(profile&&profile.username)||email.split('@')[0],email:email,token:data.access_token,userId:profile&&profile.id});
     await fetchPreferencesFromBackend();
     await fetchFavoritesFromBackend();
+    await fetchMySwapsFromBackend();
     await fetchShoppingListFromBackend();
+    syncBadgesFromBackend();
     closeAuthModal(); openProfilePanel();
   }catch(networkErr){
     // Backend unreachable — fall back to a local-only pseudo-account so the
@@ -714,6 +716,22 @@ function bumpLifetimeScanCount(){ var v=loadLifetimeScanCount()+1; localStorage.
 // to 500 so a realistic month/week of scanning is never evicted; localStorage
 // easily holds this many small entries.
 function addToHistory(entry){ var h=loadHistory(); h.unshift(entry); if(h.length>500) h=h.slice(0,500); localStorage.setItem(HISTORY_KEY,JSON.stringify(h)); bumpLifetimeScanCount(); }
+// Fire-and-forget: tells the backend about a scan whose product data came
+// from the CSV database or Open Food Facts (see the call site in
+// scanProduct()), so it lands in scan_history and counts toward this
+// account's Weekly/Monthly/All-Time totals everywhere, not just in this
+// browser's local counters. Silently does nothing for guests/local-only
+// accounts — nothing server-side to attribute it to.
+async function logScanToBackendHistory(barcode,source,productName,healthScore){
+  if(!isReallyLoggedIn()) return;
+  try{
+    await fetch(BACKEND_BASE_URL+'/scan-history',{
+      method:'POST',
+      headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
+      body:JSON.stringify({barcode:barcode,source:source||null,product_name:productName||null,health_score:(typeof healthScore==='number')?healthScore:null})
+    });
+  }catch(e){ /* offline — local history already recorded this scan */ }
+}
 function calcDashboardStats(){
   var h=loadHistory();
   // "total" is the true lifetime scan count (not capped at 50); avg/streak
@@ -767,14 +785,38 @@ function renderProfilePanel(){
   // Reconcile it with the account's true cross-device count once it loads.
   if(typeof isReallyLoggedIn==='function'&&isReallyLoggedIn()) syncProfileTotalScansFromBackend();
 }
+// Cached once fetched so renderStreakGoalCard() (Home) doesn't need its own
+// separate round-trip right after this one.
+var _backendStreakCache=null;
+var _backendStreakFetchInFlight=false;
 async function syncProfileTotalScansFromBackend(){
+  if(_backendStreakFetchInFlight) return;
+  _backendStreakFetchInFlight=true;
   try{
     var profile=await fetchBackendProfile(currentUser.token);
-    if(profile&&typeof profile.total_scans==='number'){
-      var el=document.getElementById('statTotalScans');
-      if(el) el.textContent=profile.total_scans;
+    if(!profile) return;
+    if(typeof profile.total_scans==='number'){
+      var elTotal=document.getElementById('statTotalScans');
+      if(elTotal) elTotal.textContent=profile.total_scans;
     }
-  }catch(e){ /* offline/unreachable backend — the local lifetime count already stands */ }
+    if(typeof profile.streak==='number'){
+      _backendStreakCache=profile.streak;
+      var elStreak=document.getElementById('statStreak');
+      if(elStreak) elStreak.textContent=profile.streak;
+      var streakTextEl=document.getElementById('streakText'), streakSubEl=document.getElementById('streakSub');
+      if(streakTextEl&&streakSubEl){
+        if(profile.streak>0){
+          streakTextEl.textContent='\uD83D\uDD25 '+profile.streak+'-day streak! Keep it up!';
+          streakSubEl.textContent='Scanned '+profile.streak+' day'+(profile.streak>1?'s':'')+' in a row';
+        } else {
+          streakTextEl.textContent='Start scanning to build a streak!';
+          streakSubEl.textContent='Scan any product daily to build your streak';
+        }
+      }
+      if(typeof renderStreakGoalCard==='function') renderStreakGoalCard();
+    }
+  }catch(e){ /* offline/unreachable backend — the local numbers already stand */ }
+  finally{ _backendStreakFetchInFlight=false; }
 }
 function renderBarChart(items){
   var el=document.getElementById('scoreBarChart');
@@ -1591,6 +1633,12 @@ async function scanProduct(isSample) {
             grade: prod.result.grade,
             timestamp: new Date().toISOString()
         });
+        // GET /product/{barcode} (source "BACKEND API") already logs the scan
+        // server-side itself. The other two sources — the bundled CSV
+        // database and Open Food Facts — are fetched directly by the
+        // browser and never touch the backend at all, so without this call
+        // they'd never be counted toward Weekly/Monthly/All-Time totals.
+        if (prod.source !== 'BACKEND API') logScanToBackendHistory(prod.barcode, prod.source, (prod.data && (prod.data.product_name || prod.data.name)) || 'Unknown Product', prod.result.score);
 
 if (prod.type === "off") {
     renderOFF(prod);
@@ -2140,6 +2188,20 @@ var COMPARE_LIST_KEY='swapify-compare-list-v1';
 var compareList=[]; // array of {barcode, data, result, normalized, source, badgeClass}
 var MAX_COMPARE=4;
 
+// Fire-and-forget: tells the backend a comparison happened, so it counts
+// toward the "Compare 10 products" challenge (goal_type 'compare', tallied
+// from user_activity — see compute_challenge_progress in app.py). Comparing
+// was entirely client-side before this, so the challenge could never
+// advance no matter how many products were actually compared.
+function logCompareActivity(barcode,allBarcodes){
+  if(!isReallyLoggedIn()) return;
+  fetch(BACKEND_BASE_URL+'/activity',{
+    method:'POST',
+    headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
+    body:JSON.stringify({action_type:'compare',barcode:barcode,metadata:allBarcodes?{barcodes:allBarcodes}:null})
+  }).catch(function(){});
+}
+
 function loadCompareList(){
   try{ compareList=JSON.parse(sessionStorage.getItem(COMPARE_LIST_KEY)||'[]'); }catch(e){ compareList=[]; }
 }
@@ -2172,6 +2234,7 @@ function addToCompareList(prod){
   compareList.push(compareSnapshot(prod));
   saveCompareList();
   refreshCompareUI();
+  logCompareActivity(prod.barcode);
 }
 
 function addAltToCompareList(alt){
@@ -2193,6 +2256,7 @@ function addAltToCompareList(alt){
   });
   saveCompareList();
   refreshCompareUI();
+  logCompareActivity(alt.barcode);
 }
 
 function removeFromCompareList(barcode){
@@ -2485,7 +2549,7 @@ function renderAlternatives(alts,scannedProd){
 async function compareWithAlt(barcode2){
   if(!lastScannedProduct)return;
   compareEl.className='visible';compareEl.innerHTML='<div class="compare-card"><div class="loading-spinner">Loading comparison…</div></div>';
-  try{var prod2=await fetchProduct(barcode2);renderComparison(lastScannedProduct,prod2);compareEl.scrollIntoView({behavior:'smooth',block:'start'});}
+  try{var prod2=await fetchProduct(barcode2);renderComparison(lastScannedProduct,prod2);compareEl.scrollIntoView({behavior:'smooth',block:'start'});logCompareActivity(barcode2,[lastScannedProduct.barcode,barcode2]);}
   catch(e){compareEl.innerHTML='<div class="compare-card"><div class="error-box">Could not load product.</div></div>';}
 }
 
@@ -2717,7 +2781,7 @@ document.getElementById('compareInput').addEventListener('keydown',function(e){i
 async function runCompare(){
   var bc2=document.getElementById('compareInput').value.trim();if(!bc2||!/^\d+$/.test(bc2)){alert('Enter a valid barcode.');return;}
   closeCompareModal();compareEl.className='visible';compareEl.innerHTML='<div class="compare-card"><div class="loading-spinner">Fetching…</div></div>';
-  try{var prod2=await fetchProduct(bc2);renderComparison(lastScannedProduct,prod2);}
+  try{var prod2=await fetchProduct(bc2);renderComparison(lastScannedProduct,prod2);logCompareActivity(bc2,[lastScannedProduct&&lastScannedProduct.barcode,bc2]);}
   catch(e){compareEl.innerHTML='<div class="compare-card"><div class="error-box">Product <strong>('+bc2+')</strong> not found.</div></div>';}
 }
 function getName(prod){return prod.data.product_name||'Unknown';}
@@ -3039,16 +3103,59 @@ var _badgeState={};
 function loadBadgeState(){ try{_badgeState=JSON.parse(localStorage.getItem(BADGE_KEY)||'{}');}catch(e){_badgeState={};} }
 function saveBadgeState(){ localStorage.setItem(BADGE_KEY,JSON.stringify(_badgeState)); }
 
+// The badges above used to be scored purely from loadHistory() — this
+// browser's own localStorage — which is why the same account could show a
+// different number of earned badges in every browser (Chrome might cross a
+// threshold that Edge or Safari's smaller local history never reaches, and
+// Profile showed whatever the current browser's local data said too). For a
+// real logged-in account, /badges computes the exact same six metrics from
+// every scan on the account server-side; calcBadgeProgress() below prefers
+// that once it's loaded.
+var _backendBadgeCache=null;
+var _backendBadgeFetchInFlight=false;
+async function syncBadgesFromBackend(){
+  if(!isReallyLoggedIn()||_backendBadgeFetchInFlight) return;
+  _backendBadgeFetchInFlight=true;
+  try{
+    var res=await fetch(BACKEND_BASE_URL+'/badges',{headers:getAuthHeaders()});
+    if(res.ok){
+      var data=await res.json();
+      if(data&&data.badges){
+        _backendBadgeCache=data.badges;
+        // Re-render whichever badge UI is currently on screen with the
+        // now-authoritative numbers.
+        if(badgesPanelOpen&&typeof renderBadgesPanel==='function') renderBadgesPanel();
+        if(document.getElementById('profileBadgesGrid')&&typeof renderProfileBadges==='function') renderProfileBadges();
+        if(document.getElementById('streakGoalCard')&&typeof renderStreakGoalCard==='function') renderStreakGoalCard();
+      }
+    }
+  }catch(e){ /* offline/unreachable — local badge progress already stands */ }
+  _backendBadgeFetchInFlight=false;
+}
+
 function calcBadgeProgress(){
   var h=loadHistory();
   var results={};
+  var useBackend=isReallyLoggedIn()&&_backendBadgeCache;
+  if(isReallyLoggedIn()&&!_backendBadgeCache&&!_backendBadgeFetchInFlight) syncBadgesFromBackend();
   BADGE_DEFS.forEach(function(def){
-    var val=def.metric(h);
-    var earned=val>=def.target;
+    var earned,progressVal,pct;
+    if(useBackend&&_backendBadgeCache[def.id]){
+      var b=_backendBadgeCache[def.id];
+      earned=b.earned; progressVal=b.progress; pct=b.pct;
+    } else {
+      var val=def.metric(h);
+      earned=val>=def.target;
+      progressVal=Math.min(val,def.target);
+      pct=Math.min(100,Math.round(val/def.target*100));
+    }
     var prev=_badgeState[def.id];
-    results[def.id]={earned:earned,progress:Math.min(val,def.target),target:def.target,pct:Math.min(100,Math.round(val/def.target*100))};
+    results[def.id]={earned:earned,progress:progressVal,target:def.target,pct:pct};
     if(earned&&!prev){
-      // Newly earned
+      // Newly earned (first time this browser has seen it cross the line —
+      // still shown once per browser even though the underlying data is now
+      // shared, so nobody misses the celebration just because they usually
+      // check achievements from a different device).
       _badgeState[def.id]=true;
       saveBadgeState();
       showBadgeToast(def);
@@ -3678,19 +3785,72 @@ function loadMySwaps(){ try{return JSON.parse(localStorage.getItem(MY_SWAPS_KEY)
 function saveMySwapsList(list){ localStorage.setItem(MY_SWAPS_KEY,JSON.stringify(list)); }
 function isSwapSaved(origBarcode,altBarcode){ return loadMySwaps().some(function(s){return s.originalBarcode===origBarcode&&s.altBarcode===altBarcode;}); }
 
+// ── My Swaps backend sync ──
+// This used to be pure localStorage, which is why a swap saved in one
+// browser was invisible in any other (same root cause as Favorites before
+// it was wired up). Push on every change, pull-and-merge on login.
+var MY_SWAPS_URL=BACKEND_BASE_URL+'/my-swaps';
+function syncMySwapAddToBackend(s){
+  if(!isReallyLoggedIn()) return;
+  fetch(MY_SWAPS_URL,{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({
+    original_barcode:s.originalBarcode,original_name:s.originalName,alt_barcode:s.altBarcode,
+    alt_name:s.altName,alt_brand:s.altBrand,alt_score:s.altScore,alt_grade:s.altGrade,note:s.note||''
+  })}).then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+function syncMySwapRemoveToBackend(origBarcode,altBarcode){
+  if(!isReallyLoggedIn()) return;
+  fetch(MY_SWAPS_URL+'/'+encodeURIComponent(origBarcode)+'/'+encodeURIComponent(altBarcode),{method:'DELETE',headers:getAuthHeaders()})
+    .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+function syncMySwapNoteToBackend(origBarcode,altBarcode,note){
+  if(!isReallyLoggedIn()) return;
+  fetch(MY_SWAPS_URL+'/note',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({original_barcode:origBarcode,alt_barcode:altBarcode,note:note||''})})
+    .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+// Pulls the account's saved swaps down from the backend, same merge logic as
+// fetchFavoritesFromBackend: anything only saved locally (offline, or as a
+// guest before this login) is pushed up first so nothing is silently lost.
+async function fetchMySwapsFromBackend(){
+  if(!isReallyLoggedIn()) return;
+  var local=loadMySwaps();
+  try{
+    var res=await fetch(MY_SWAPS_URL,{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); return; }
+    var backendList=await res.json();
+    if(!Array.isArray(backendList)) return;
+    var backendPairs={};
+    backendList.forEach(function(s){ backendPairs[s.original_barcode+'|'+s.alt_barcode]=true; });
+    var localOnly=local.filter(function(s){ return !backendPairs[s.originalBarcode+'|'+s.altBarcode]; });
+    localOnly.forEach(function(s){ syncMySwapAddToBackend(s); });
+    var merged=backendList.map(function(s){
+      return{
+        id:'swap_'+s.original_barcode+'_'+s.alt_barcode,
+        originalBarcode:s.original_barcode,originalName:s.original_name,
+        altBarcode:s.alt_barcode,altName:s.alt_name,altBrand:s.alt_brand,
+        altScore:s.alt_score,altGrade:s.alt_grade,note:s.note||'',
+        addedAt:s.added_at?new Date(s.added_at).getTime():Date.now()
+      };
+    }).concat(localOnly);
+    saveMySwapsList(merged);
+    refreshSwapButtons();
+    if(mySwapsPanelOpen) renderMySwapsPanel();
+  }catch(e){ /* offline/unreachable backend — local swaps remain usable */ }
+}
+
 function saveSwapFromAlt(origBarcode,altBarcode){
   if(isSwapSaved(origBarcode,altBarcode)){
     var list=loadMySwaps().filter(function(s){return !(s.originalBarcode===origBarcode&&s.altBarcode===altBarcode);});
     saveMySwapsList(list);
     refreshSwapButtons();
     if(mySwapsPanelOpen) renderMySwapsPanel();
+    syncMySwapRemoveToBackend(origBarcode,altBarcode);
     return;
   }
   var alt=(window.__altLookup&&window.__altLookup[altBarcode])||null;
   if(!alt) return;
   var originalName=(lastScannedProduct&&lastScannedProduct.data&&(lastScannedProduct.data.product_name||lastScannedProduct.data.name))||'Unknown';
   var list=loadMySwaps();
-  list.unshift({
+  var entry={
     id:'swap_'+Date.now()+'_'+Math.random().toString(36).substr(2,6),
     originalBarcode:origBarcode,
     originalName:originalName,
@@ -3701,10 +3861,12 @@ function saveSwapFromAlt(origBarcode,altBarcode){
     altGrade:alt.grade,
     note:'',
     addedAt:Date.now()
-  });
+  };
+  list.unshift(entry);
   saveMySwapsList(list);
   refreshSwapButtons();
   if(mySwapsPanelOpen) renderMySwapsPanel();
+  syncMySwapAddToBackend(entry);
 }
 
 function refreshSwapButtons(){
@@ -3717,16 +3879,19 @@ function refreshSwapButtons(){
 }
 
 function removeSwap(id){
-  var list=loadMySwaps().filter(function(s){return s.id!==id;});
+  var list=loadMySwaps();
+  var item=list.find(function(s){return s.id===id;});
+  list=list.filter(function(s){return s.id!==id;});
   saveMySwapsList(list);
   renderMySwapsPanel();
   refreshSwapButtons();
+  if(item) syncMySwapRemoveToBackend(item.originalBarcode,item.altBarcode);
 }
 
 function updateSwapNote(id,note){
   var list=loadMySwaps();
   var item=list.find(function(s){return s.id===id;});
-  if(item){ item.note=note; saveMySwapsList(list); }
+  if(item){ item.note=note; saveMySwapsList(list); syncMySwapNoteToBackend(item.originalBarcode,item.altBarcode,note); }
 }
 
 function toggleMySwapsPanel(){
@@ -4024,15 +4189,27 @@ function renderStreakGoalCard(){
   var todayCount=getTodayScanCount();
   var pct=Math.min(100,Math.round((todayCount/goal)*100));
   var complete=todayCount>=goal;
-  var streakText=stats.streak>0
-    ? 'You\u2019ve scanned for '+stats.streak+' day'+(stats.streak>1?'s':'')+' in a row!'
+  // The local streak above only reflects scans made on THIS browser, which
+  // is why the same account could show a different streak in every browser
+  // it was used from. Prefer the backend's cross-device streak once it's
+  // available for a real logged-in account.
+  var streak=stats.streak;
+  if(typeof isReallyLoggedIn==='function'&&isReallyLoggedIn()){
+    if(typeof _backendStreakCache==='number'){
+      streak=_backendStreakCache;
+    } else if(typeof syncProfileTotalScansFromBackend==='function'){
+      syncProfileTotalScansFromBackend(); // will re-call renderStreakGoalCard() once it lands
+    }
+  }
+  var streakText=streak>0
+    ? 'You\u2019ve scanned for '+streak+' day'+(streak>1?'s':'')+' in a row!'
     : 'Scan today to start a streak!';
 
   checkDailyGoalMilestone(complete);
 
   el.innerHTML='<div class="streak-goal-outer">'
     +'<div class="streak-goal-top-row">'
-    +'<div class="streak-flame-block"><span class="streak-flame-icon'+(stats.streak>0?' active':'')+'">\uD83D\uDD25</span><div><div class="streak-flame-num">'+stats.streak+'</div><div class="streak-flame-lbl">'+streakText+'</div></div></div>'
+    +'<div class="streak-flame-block"><span class="streak-flame-icon'+(streak>0?' active':'')+'">\uD83D\uDD25</span><div><div class="streak-flame-num">'+streak+'</div><div class="streak-flame-lbl">'+streakText+'</div></div></div>'
     +'<div class="goal-stepper"><span class="goal-stepper-label">Daily goal:</span>'
     +'<button class="goal-stepper-btn" onclick="adjustDailyGoal(-1)">\u2212</button>'
     +'<span class="goal-stepper-num">'+goal+'</span>'
@@ -5052,7 +5229,7 @@ calcBadgeProgress(); // check for any already-earned badges silently
 refreshCompareUI();
 maybeShowOnboarding();
 loadAuth();
-if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); fetchShoppingListFromBackend(); }
+if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); fetchMySwapsFromBackend(); fetchShoppingListFromBackend(); syncBadgesFromBackend(); }
 renderHomeDashboard();
 renderStreakGoalCard();
 renderQuickStats();
@@ -5072,8 +5249,8 @@ addToHistory=function(entry){
 
 // Refresh the dashboard's greeting + personalized/generic split on login/logout
 var _origSaveAuth=saveAuth, _origClearAuth=clearAuth;
-saveAuth=function(user){ _origSaveAuth(user); _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; renderHomeDashboard(); };
-clearAuth=function(){ _origClearAuth(); _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; renderHomeDashboard(); };
+saveAuth=function(user){ _origSaveAuth(user); _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; _backendStreakCache=null; _backendBadgeCache=null; renderHomeDashboard(); };
+clearAuth=function(){ _origClearAuth(); _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; _backendStreakCache=null; _backendBadgeCache=null; renderHomeDashboard(); };
 
 // Refresh trending fallback + categories once the CSV finishes loading (it
 // loads async and may finish after the first render calls above)

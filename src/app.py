@@ -105,6 +105,31 @@ class UserPreferences(BaseModel):
 
 class FavoriteAdd(BaseModel):
     barcode: str
+    # Denormalized fallback display data, supplied by the client. Populated
+    # only when the barcode isn't in our own `products` table (the bundled
+    # CSV database or Open Food Facts) — see the note on POST /favorites for
+    # why this exists.
+    product_name: Optional[str] = None
+    brand: Optional[str] = None
+    health_score: Optional[float] = None
+    grade: Optional[str] = None
+
+
+class MySwapAdd(BaseModel):
+    original_barcode: str
+    original_name: Optional[str] = None
+    alt_barcode: str
+    alt_name: Optional[str] = None
+    alt_brand: Optional[str] = None
+    alt_score: Optional[float] = None
+    alt_grade: Optional[str] = None
+    note: Optional[str] = ""
+
+
+class MySwapNoteUpdate(BaseModel):
+    original_barcode: str
+    alt_barcode: str
+    note: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -636,11 +661,111 @@ def profile(user_id: int = Depends(get_current_user)):
     # number it now reconciles against.
     cursor.execute("SELECT COUNT(*) AS cnt FROM scan_history WHERE user_id = ?", (user_id,))
     total_scans = cursor.fetchone()["cnt"]
+
+    # Cross-device day streak. The frontend used to compute this purely from
+    # each browser's own localStorage scan history, so the exact same account
+    # could show a different streak in every browser (each one only "knew
+    # about" the scans made in it). This mirrors that day-by-day logic
+    # (today may be missing without breaking the streak — someone just
+    # hasn't scanned yet today — but any other missing day ends it) against
+    # every scan on the account, regardless of which device made it.
+    cursor.execute(
+        "SELECT DISTINCT date(scanned_at) AS d FROM scan_history WHERE user_id = ?",
+        (user_id,)
+    )
+    scan_dates = {r["d"] for r in cursor.fetchall()}
     conn.close()
+
+    streak = 0
+    cur_date = datetime.datetime.utcnow().date()
+    for i in range(365):
+        if cur_date.isoformat() in scan_dates:
+            streak += 1
+            cur_date -= datetime.timedelta(days=1)
+        else:
+            if i == 0:
+                cur_date -= datetime.timedelta(days=1)
+                continue
+            break
 
     result = dict(row)
     result["total_scans"] = total_scans
+    result["streak"] = streak
     return result
+
+
+# Mirrors BADGE_DEFS in script.js: same ids and targets. Computed from every
+# scan on the account (scan_history), not just the current browser's
+# localStorage — that mismatch was Bug 4 (an account could show "2 badges
+# earned" in one browser and only 1 in another, including Profile, since
+# Profile read the same local-only data).
+_BADGE_TARGETS = {
+    "health_champion": 100,
+    "sugar_detective": 10,
+    "protein_hunter": 10,
+    "scanner_pro": 7,
+    "community_contributor": 20,
+    "clean_eater": 50,
+}
+_SUGAR_DETECTIVE_PATTERN = re.compile(r"(cola|candy|chocolate|cookie|biscuit)", re.IGNORECASE)
+
+
+@app.get("/badges")
+def get_badges(user_id: int = Depends(get_current_user)):
+    """Cross-device Achievements/badge progress for the authenticated user."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT barcode, product_name, health_score, scanned_at FROM scan_history WHERE user_id = ?",
+        (user_id,)
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    total_scans = len(rows)
+    distinct_barcodes = len({r["barcode"] for r in rows if r.get("barcode")})
+    sugar_detective_count = sum(
+        1 for r in rows
+        if r.get("health_score") is not None and r["health_score"] >= 5
+        and r.get("product_name") and _SUGAR_DETECTIVE_PATTERN.search(r["product_name"])
+    )
+    score_ge_7_count = sum(
+        1 for r in rows if r.get("health_score") is not None and r["health_score"] >= 7
+    )
+
+    # Same day-streak logic as /profile.
+    scan_dates = {r["scanned_at"][:10] for r in rows if r.get("scanned_at")}
+    streak = 0
+    cur_date = datetime.datetime.utcnow().date()
+    for i in range(365):
+        if cur_date.isoformat() in scan_dates:
+            streak += 1
+            cur_date -= datetime.timedelta(days=1)
+        else:
+            if i == 0:
+                cur_date -= datetime.timedelta(days=1)
+                continue
+            break
+
+    metrics = {
+        "health_champion": total_scans,
+        "sugar_detective": sugar_detective_count,
+        "protein_hunter": score_ge_7_count,
+        "scanner_pro": streak,
+        "community_contributor": distinct_barcodes,
+        "clean_eater": score_ge_7_count,
+    }
+
+    badges = {}
+    for badge_id, target in _BADGE_TARGETS.items():
+        val = metrics[badge_id]
+        badges[badge_id] = {
+            "progress": min(val, target),
+            "target": target,
+            "earned": val >= target,
+            "pct": round(100 * min(val, target) / target, 1) if target else 0.0,
+        }
+    return {"badges": badges}
 
 
 def fetch_off_product(barcode: str):
@@ -972,9 +1097,17 @@ def get_product(barcode: str, device_id: Optional[str] = None,
             barcode = row["barcode"]
 
     if row and (device_id or user_id):
+        # Generic (unpersonalized) score, purely so badge metrics have a
+        # stable, comparable basis across users — the personalized score used
+        # for the response itself is computed separately below.
+        try:
+            _badge_score, _, _, _ = calculate_health_score_v2(dict(row), 1, None)
+        except Exception:
+            _badge_score = None
         cursor.execute(
-            "INSERT INTO scan_history (device_id, user_id, barcode) VALUES (?, ?, ?)",
-            (device_id, user_id, barcode)
+            "INSERT INTO scan_history (device_id, user_id, barcode, product_name, health_score) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (device_id, user_id, barcode, row["product_name"], _badge_score)
         )
         conn.commit()
         # Best-effort activity log for logged-in scans (see /activity).
@@ -2228,15 +2361,69 @@ def get_product_badge(barcode: str, user_id: Optional[int] = Depends(get_current
     }
 
 
+class ScanHistoryLogRequest(BaseModel):
+    barcode: str
+    # Where the product data came from on the client — "csv" (bundled
+    # Swapify database) or "off" (Open Food Facts). Purely informational;
+    # doesn't affect what gets stored.
+    source: Optional[str] = None
+    device_id: Optional[str] = None
+    # Denormalized snapshot from the client, since these scans have no row in
+    # our own `products` table to look this up from server-side. Needed so
+    # badge metrics (Sugar Detective's name pattern, the score-based badges)
+    # can be computed from scan_history alone, the same for every scan
+    # regardless of which source resolved the product (Bug 4).
+    product_name: Optional[str] = None
+    health_score: Optional[float] = None
+
+
+@app.post("/scan-history")
+def log_scan_history(
+        entry: ScanHistoryLogRequest,
+        user_id: Optional[int] = Depends(get_current_user_optional),
+):
+    """Record a scan whose product data came from the bundled CSV database or
+    Open Food Facts, called directly by the browser (see fetchProduct() in
+    script.js) — both bypass GET /product/{barcode} entirely, so neither ever
+    reached scan_history before. That's why Weekly/Monthly/All-Time scan
+    totals could sit still even while a user kept actively scanning: only
+    scans matched against our own `products` table were ever counted.
+    GET /product/{barcode} already logs its own matches, so this endpoint is
+    only called by the frontend for the other two sources, to avoid double-
+    counting the same scan.
+
+    Requires a logged-in user — there's nothing to attribute an anonymous
+    scan to server-side, and anonymous/local-only usage already keeps its
+    own count entirely in the browser, same as before.
+    """
+    barcode = (entry.barcode or "").strip()
+    if not barcode:
+        raise HTTPException(status_code=400, detail="barcode is required")
+    if not isinstance(user_id, int):
+        return {"logged": False}
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO scan_history (device_id, user_id, barcode, product_name, health_score) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (entry.device_id, user_id, barcode, entry.product_name, entry.health_score)
+    )
+    conn.commit()
+    log_activity(user_id, "scan", barcode, {"source": entry.source} if entry.source else None)
+    conn.close()
+    return {"logged": True}
+
+
 @app.get("/history")
 def get_history(user_id: int = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute('''
-        SELECT h.scanned_at, p.* 
+        SELECT h.scanned_at, h.barcode AS h_barcode, p.* 
         FROM scan_history h 
-        JOIN products p ON h.barcode = p.barcode 
+        LEFT JOIN products p ON h.barcode = p.barcode 
         WHERE h.user_id = ? 
         ORDER BY h.scanned_at DESC 
         LIMIT 5
@@ -2249,9 +2436,24 @@ def get_history(user_id: int = Depends(get_current_user)):
     results = []
     for row in rows:
         p_dict = dict(row)
+        barcode = p_dict.get("barcode") or p_dict.get("h_barcode")
+        if p_dict.get("barcode") is None:
+            # Scanned, but the product isn't in our own `products` table
+            # (came from the bundled CSV database or Open Food Facts) — show
+            # it with the barcode alone rather than dropping it from history.
+            results.append({
+                "barcode": barcode,
+                "product_name": "Unknown Product",
+                "brand": None,
+                "health_score": None,
+                "grade": None,
+                "image_url": None,
+                "scanned_at": p_dict["scanned_at"]
+            })
+            continue
         score, grade, _, _ = calculate_health_score_v2(p_dict, 1, preferences)
         results.append({
-            "barcode": p_dict["barcode"],
+            "barcode": barcode,
             "product_name": p_dict["product_name"],
             "brand": p_dict["brand"],
             "health_score": score,
@@ -2416,19 +2618,21 @@ def update_preferences(prefs: dict, user_id: int = Depends(get_current_user)):
 def add_favorite(fav: FavoriteAdd, user_id: int = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM products WHERE barcode = ?", (fav.barcode,))
-    if not cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=404, detail="Product not found")
 
     cursor.execute("SELECT id FROM favorites WHERE user_id = ? AND barcode = ?", (user_id, fav.barcode))
     if cursor.fetchone():
         conn.close()
         return {"message": "Already in favorites"}
 
+    # Products from the bundled CSV database or Open Food Facts aren't in our
+    # own `products` table, so this used to 404 for most real-world favorites
+    # instead of saving them. Store the client's denormalized snapshot as a
+    # fallback for exactly that case; a `products` match (when one exists)
+    # still takes priority for display, same as everywhere else.
     cursor.execute(
-        "INSERT INTO favorites (user_id, barcode) VALUES (?, ?)",
-        (user_id, fav.barcode)
+        "INSERT INTO favorites (user_id, barcode, product_name, brand, health_score, grade) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, fav.barcode, fav.product_name, fav.brand, fav.health_score, fav.grade)
     )
     conn.commit()
     conn.close()
@@ -2453,10 +2657,15 @@ def remove_favorite(barcode: str, user_id: int = Depends(get_current_user)):
 def get_favorites(user_id: int = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
+    # LEFT JOIN, not JOIN — a favorited barcode may have no row in our own
+    # `products` table at all (see POST /favorites above). Falls back to the
+    # denormalized snapshot stored at favorite-time in that case, instead of
+    # silently dropping the favorite from the list.
     cursor.execute('''
-        SELECT f.added_at, p.* 
+        SELECT f.added_at, f.barcode AS f_barcode, f.product_name AS f_product_name,
+               f.brand AS f_brand, f.health_score AS f_health_score, f.grade AS f_grade, p.*
         FROM favorites f 
-        JOIN products p ON f.barcode = p.barcode 
+        LEFT JOIN products p ON f.barcode = p.barcode 
         WHERE f.user_id = ?
         ORDER BY f.added_at DESC
     ''', (user_id,))
@@ -2467,16 +2676,101 @@ def get_favorites(user_id: int = Depends(get_current_user)):
     results = []
     for row in rows:
         p_dict = dict(row)
-        score, grade, _, _ = calculate_health_score_v2(p_dict, 1, preferences)
-        results.append({
-            "barcode": p_dict.get("barcode"),
-            "product_name": p_dict.get("product_name"),
-            "brand": p_dict.get("brand"),
-            "health_score": score,
-            "grade": grade,
-            "added_at": p_dict.get("added_at")
-        })
+        if p_dict.get("barcode") is not None:
+            score, grade, _, _ = calculate_health_score_v2(p_dict, 1, preferences)
+            results.append({
+                "barcode": p_dict.get("barcode"),
+                "product_name": p_dict.get("product_name"),
+                "brand": p_dict.get("brand"),
+                "health_score": score,
+                "grade": grade,
+                "added_at": p_dict.get("added_at")
+            })
+        else:
+            # No `products` match — use the snapshot taken when it was favorited.
+            results.append({
+                "barcode": p_dict.get("f_barcode"),
+                "product_name": p_dict.get("f_product_name") or "Unknown Product",
+                "brand": p_dict.get("f_brand"),
+                "health_score": p_dict.get("f_health_score"),
+                "grade": p_dict.get("f_grade"),
+                "added_at": p_dict.get("added_at")
+            })
     return results
+
+
+# ── My Swaps (Bug 2) ──
+# This feature was pure localStorage — a swap saved in one browser was
+# invisible in any other. Wired up the same way Favorites already are: an
+# explicit denormalized snapshot per row (the alt product may not be in our
+# own `products` table either), a unique (user, original, alt) constraint so
+# re-saving the same pair is a no-op, and a dedicated endpoint for editing a
+# swap's note without re-sending the whole row.
+@app.post("/my-swaps")
+def add_my_swap(swap: MySwapAdd, user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM my_swaps WHERE user_id = ? AND original_barcode = ? AND alt_barcode = ?",
+        (user_id, swap.original_barcode, swap.alt_barcode)
+    )
+    if cursor.fetchone():
+        conn.close()
+        return {"message": "Already saved"}
+
+    cursor.execute(
+        "INSERT INTO my_swaps (user_id, original_barcode, original_name, alt_barcode, "
+        "alt_name, alt_brand, alt_score, alt_grade, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, swap.original_barcode, swap.original_name, swap.alt_barcode,
+         swap.alt_name, swap.alt_brand, swap.alt_score, swap.alt_grade, swap.note or "")
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Swap saved"}
+
+
+@app.delete("/my-swaps/{original_barcode}/{alt_barcode}")
+def remove_my_swap(original_barcode: str, alt_barcode: str, user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM my_swaps WHERE user_id = ? AND original_barcode = ? AND alt_barcode = ?",
+        (user_id, original_barcode, alt_barcode)
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Swap removed"}
+
+
+@app.post("/my-swaps/note")
+def update_my_swap_note(body: MySwapNoteUpdate, user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE my_swaps SET note = ? WHERE user_id = ? AND original_barcode = ? AND alt_barcode = ?",
+        (body.note or "", user_id, body.original_barcode, body.alt_barcode)
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    if not updated:
+        raise HTTPException(status_code=404, detail="Swap not found")
+    return {"message": "Note updated"}
+
+
+@app.get("/my-swaps")
+def get_my_swaps(user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT original_barcode, original_name, alt_barcode, alt_name, alt_brand, "
+        "alt_score, alt_grade, note, added_at FROM my_swaps WHERE user_id = ? "
+        "ORDER BY added_at DESC",
+        (user_id,)
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
 
 
 @app.get("/weekly-summary")
@@ -2486,10 +2780,19 @@ def get_weekly_summary(user_id: int = Depends(get_current_user)):
 
     seven_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
 
+    # LEFT JOIN, not JOIN: a scanned barcode may belong to a product that only
+    # lives in the bundled CSV database or Open Food Facts and was never
+    # written to our own `products` table — in that case p.* comes back
+    # all-NULL here. The previous INNER JOIN silently dropped those rows from
+    # the result set entirely, which is why "Total Scans" could stay flat
+    # even while the user kept scanning things. Every scan_history row now
+    # counts toward total_scans regardless; only the score-based aggregates
+    # (which need product nutrition data to compute) are drawn from the
+    # subset that has a matching product row.
     cursor.execute('''
         SELECT h.scanned_at, p.* 
         FROM scan_history h 
-        JOIN products p ON h.barcode = p.barcode 
+        LEFT JOIN products p ON h.barcode = p.barcode 
         WHERE h.user_id = ? AND h.scanned_at >= ?
         ORDER BY h.scanned_at ASC
     ''', (user_id, seven_days_ago.strftime('%Y-%m-%d %H:%M:%S')))
@@ -2500,19 +2803,25 @@ def get_weekly_summary(user_id: int = Depends(get_current_user)):
     preferences = load_user_preferences(user_id)
     total_scans = len(rows)
     total_score = 0
+    scored_count = 0
     daily_trends_dict = {}
 
     for row in rows:
         p_dict = dict(row)
+        if p_dict.get('barcode') is None:
+            # No matching product row — still a real, counted scan, just
+            # without nutrition data to score.
+            continue
         score, _, _, _ = calculate_health_score_v2(p_dict, 1, preferences)
         total_score += score
+        scored_count += 1
 
         date_str = p_dict['scanned_at'][:10]
         if date_str not in daily_trends_dict:
             daily_trends_dict[date_str] = []
         daily_trends_dict[date_str].append(score)
 
-    avg_score = (total_score / total_scans) if total_scans > 0 else 0
+    avg_score = (total_score / scored_count) if scored_count > 0 else 0
 
     daily_trends = []
     for date_str, sorted_scores in sorted(daily_trends_dict.items()):
@@ -2563,10 +2872,14 @@ def get_monthly_report(
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    # LEFT JOIN, not JOIN — see the identical comment in /weekly-summary.
+    # A scan of a product that only lives in the bundled CSV database or
+    # Open Food Facts has no row in our own `products` table, and an INNER
+    # JOIN was silently excluding those scans from total_scans entirely.
     cursor.execute('''
         SELECT h.scanned_at, p.*
         FROM scan_history h
-        JOIN products p ON h.barcode = p.barcode
+        LEFT JOIN products p ON h.barcode = p.barcode
         WHERE h.user_id = ? AND substr(h.scanned_at, 1, 7) = ?
         ORDER BY h.scanned_at ASC
     ''', (effective_user_id, month))
@@ -2588,11 +2901,17 @@ def get_monthly_report(
 
     preferences = load_user_preferences(effective_user_id)
 
+    total_scans = len(rows)
     scored = []
     category_counts = {}
     daily = {}
     for row in rows:
         p_dict = dict(row)
+        if p_dict.get('barcode') is None:
+            # Real scan, but no matching product row to score — still counts
+            # toward total_scans (handled via len(rows) above), just isn't
+            # part of the score-based aggregates below.
+            continue
         score, grade, _, _ = calculate_health_score_v2(p_dict, 1, preferences)
         scored.append({
             "barcode": p_dict["barcode"],
@@ -2610,18 +2929,19 @@ def get_monthly_report(
         day = p_dict["scanned_at"][:10]
         daily.setdefault(day, []).append(score)
 
-    total_scans = len(scored)
-    average_score = round(sum(s["score"] for s in scored) / total_scans, 2)
-    best = max(scored, key=lambda s: s["score"])
-    worst = min(scored, key=lambda s: s["score"])
+    scored_count = len(scored)
+    average_score = round(sum(s["score"] for s in scored) / scored_count, 2) if scored_count > 0 else 0
+    best = max(scored, key=lambda s: s["score"]) if scored else None
+    worst = min(scored, key=lambda s: s["score"]) if scored else None
 
-    # Score trend: average of the first half of the month's scans vs the second
-    # half (chronological). A >= 0.5 swing counts as improving / declining.
-    trend = "stable"
-    if total_scans >= 2:
-        mid = total_scans // 2
+    # Score trend: average of the first half of the month's scored scans vs
+    # the second half (chronological). A >= 0.5 swing counts as
+    # improving / declining.
+    trend = "stable" if scored_count > 0 else "no_data"
+    if scored_count >= 2:
+        mid = scored_count // 2
         first_avg = sum(s["score"] for s in scored[:mid]) / mid
-        second_avg = sum(s["score"] for s in scored[mid:]) / (total_scans - mid)
+        second_avg = sum(s["score"] for s in scored[mid:]) / (scored_count - mid)
         diff = second_avg - first_avg
         if diff >= 0.5:
             trend = "improving"
@@ -2639,6 +2959,8 @@ def get_monthly_report(
     ]
 
     def _summary(s):
+        if s is None:
+            return None
         return {
             "barcode": s["barcode"],
             "product_name": s["product_name"],
@@ -5456,6 +5778,62 @@ def ensure_performance_and_image_schema():
         existing_cols = {r[1] for r in cur.execute("PRAGMA table_info(products)")}
         if "image_url" not in existing_cols:
             cur.execute("ALTER TABLE products ADD COLUMN image_url TEXT")
+
+        # --- Bug fix: favorites of products that only exist in the bundled CSV
+        # database or Open Food Facts (never our own `products` table) used to
+        # 404 on POST /favorites and, even when a row did exist, silently
+        # vanished from GET /favorites (INNER JOIN against `products`). These
+        # columns hold a denormalized snapshot supplied by the client at
+        # favorite-time so such favorites can be stored and displayed without
+        # needing a `products` match at all.
+        fav_cols = {r[1] for r in cur.execute("PRAGMA table_info(favorites)")}
+        if "product_name" not in fav_cols:
+            cur.execute("ALTER TABLE favorites ADD COLUMN product_name TEXT")
+        if "brand" not in fav_cols:
+            cur.execute("ALTER TABLE favorites ADD COLUMN brand TEXT")
+        if "health_score" not in fav_cols:
+            cur.execute("ALTER TABLE favorites ADD COLUMN health_score REAL")
+        if "grade" not in fav_cols:
+            cur.execute("ALTER TABLE favorites ADD COLUMN grade TEXT")
+
+        # --- My Swaps (Bug 2): this feature had no backend table at all before —
+        # it was pure localStorage, which is exactly why a swap saved in one
+        # browser never showed up in another. Stores a denormalized snapshot
+        # (same reasoning as the favorites columns above) since a swap's
+        # alternative product may not be in our own `products` table either.
+        cur.executescript('''
+            CREATE TABLE IF NOT EXISTS my_swaps (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id           INTEGER NOT NULL,
+                original_barcode  TEXT NOT NULL,
+                original_name     TEXT,
+                alt_barcode       TEXT NOT NULL,
+                alt_name          TEXT,
+                alt_brand         TEXT,
+                alt_score         REAL,
+                alt_grade         TEXT,
+                note              TEXT DEFAULT '',
+                added_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, original_barcode, alt_barcode),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_my_swaps_user ON my_swaps(user_id);
+        ''')
+
+        # --- Achievements/badges (Bug 4): the badge system (Health Champion,
+        # Sugar Detective, etc.) was computed entirely from this browser's
+        # localStorage scan history, so the same account could show a
+        # different number of earned badges in every browser — including
+        # Profile, since it read the same local-only data. These columns let
+        # scan_history carry what each badge's metric actually needs
+        # (product name pattern + health score) without requiring a
+        # `products` match, so badge progress can be computed once, from the
+        # server, the same everywhere.
+        sh_cols = {r[1] for r in cur.execute("PRAGMA table_info(scan_history)")}
+        if "product_name" not in sh_cols:
+            cur.execute("ALTER TABLE scan_history ADD COLUMN product_name TEXT")
+        if "health_score" not in sh_cols:
+            cur.execute("ALTER TABLE scan_history ADD COLUMN health_score REAL")
 
         # --- Task 1A: indexes on frequently searched columns + a composite index
         cur.executescript('''
