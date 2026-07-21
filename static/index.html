@@ -178,7 +178,7 @@
           <rect x="9" y="4" width="2" height="16" rx="0.5"/><rect x="13" y="4" width="1" height="16" rx="0.5"/>
           <rect x="16" y="4" width="2" height="16" rx="0.5"/><rect x="20" y="4" width="2" height="16" rx="0.5"/>
         </svg>
-        <input type="text" id="barcodeInput" placeholder="Enter barcode, say it, or scan…" oninput="handleSearchAutocompleteInput(this.value)" autocomplete="off">
+        <input type="text" id="barcodeInput" placeholder="Enter barcode or product name, or say it…" oninput="handleSearchAutocompleteInput(this.value)" autocomplete="off">
         <div class="search-suggest-list" id="searchSuggestList"></div>
       </div>
       <button class="btn-scan-primary" onclick="scanProduct()">Scan</button>
@@ -202,8 +202,11 @@
     <!-- Voice status -->
     <div class="voice-status" id="voiceStatus">
       <div class="voice-dot"></div>
-      <span id="voiceStatusText">Listening… say the barcode digits</span>
+      <span id="voiceStatusText">Listening… say a barcode or a product name</span>
     </div>
+
+    <button type="button" class="btn-name-photo-link" onclick="triggerNameFromPhoto()">📷 Can't find a barcode? Snap the product name instead</button>
+    <div class="name-photo-status" id="namePhotoStatus"></div>
 
     <div id="cameraSection">
       <div id="reader"></div>
@@ -230,6 +233,7 @@
       <div class="camera-error-footer">
         <span class="camera-error-footer-label">try instead:</span>
         <span class="camera-error-tip">⌨️ Type barcode above</span>
+        <span class="camera-error-tip camera-error-tip-action" onclick="triggerNameFromPhoto()">📷 Snap the name instead</span>
         <span class="camera-error-tip" id="tipPermission" style="display:none;">⚙️ Allow in site settings</span>
         <span class="camera-error-tip" id="tipReload" style="display:none;">🔄 Reload &amp; retry</span>
         <span class="camera-error-tip" id="tipHTTPS" style="display:none;">🔒 Requires HTTPS</span>
@@ -249,6 +253,8 @@
 
 <!-- Hidden file input used by the "Upload label photo" OCR fallback (Task 6) -->
 <input type="file" id="ocrLabelFileInput" accept="image/png,image/jpeg" style="display:none;" onchange="handleOcrLabelFileSelected(this.files)">
+<!-- capture="environment" opens the device's rear camera directly on mobile instead of a bare file picker; on desktop it just falls back to a normal file picker -->
+<input type="file" id="nameFromPhotoInput" accept="image/png,image/jpeg" capture="environment" style="display:none;" onchange="handleNameFromPhotoSelected(this.files)">
 
 <!-- ═══ PAGE: PRODUCT ═══ -->
 <div id="page-product" class="page">

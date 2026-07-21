@@ -6778,7 +6778,7 @@ async def ocr_scan_label(file: UploadFile = File(...)):
     # Map the OCR output onto a product-shaped dict and score it with the real
     # engine, so a scanned label is scored exactly like a catalogue product.
     pseudo_product = {
-        "product_name": "Scanned label",
+        "product_name": scan.get("guessed_name") or "Scanned label",
         "ingredients_text": scan["ingredients_text"],
         **scan["nutrition"],
     }
@@ -6790,6 +6790,10 @@ async def ocr_scan_label(file: UploadFile = File(...)):
         "ingredients": scan["ingredients"],
         "ingredients_text": scan["ingredients_text"],
         "nutrition": scan["nutrition"],
+        # Best-effort guess at the product's name (see guess_product_name in
+        # ocr_label_scanner.py) — lets the camera search by name from a photo
+        # of the packaging, not just parse nutrition facts.
+        "guessed_name": scan.get("guessed_name"),
         "score": score,
         "grade": grade,
         "rule_version": rule_version,

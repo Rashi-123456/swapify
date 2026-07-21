@@ -234,25 +234,34 @@ function startVoice(){
   recognition.maxAlternatives=3;
   voiceListening=true;
   micBtn.classList.add('listening');
-  showVoiceStatus('Listening… say the barcode digits clearly','info');
+  showVoiceStatus('Listening… say a barcode or a product name','info');
   recognition.onresult=function(e){
     var results=e.results[0];
-    // Try each alternative — pick the one that looks most like digits
-    var bestText='', bestDigits='';
+    // Most confident alternative, used as the product-name fallback below.
+    var topText=(results[0]&&results[0].transcript||'').trim();
+    // Try each alternative for the one that looks most like a spoken-out
+    // barcode (a long run of digits) — people read barcodes digit by digit.
+    var bestDigits='', bestDigitsText='';
     for(var i=0;i<results.length;i++){
       var raw=results[i].transcript.trim();
-      // Convert spoken words to digits
-      var converted=wordsToDigits(raw);
-      var digits=converted.replace(/\D/g,'');
-      if(digits.length>bestDigits.length){ bestDigits=digits; bestText=raw; }
+      var digits=wordsToDigits(raw).replace(/\D/g,'');
+      if(digits.length>bestDigits.length){ bestDigits=digits; bestDigitsText=raw; }
     }
     stopVoice();
     if(bestDigits.length>=6){
       document.getElementById('barcodeInput').value=bestDigits;
-      showVoiceStatus('Got it: "'+bestText+'" → '+bestDigits,'success');
+      showVoiceStatus('Got it: "'+bestDigitsText+'" \u2192 '+bestDigits,'success');
       setTimeout(function(){hideVoiceStatus();scanProduct();},900);
+    } else if(topText){
+      // Didn't sound like a barcode — treat it as a spoken product name and
+      // run it through the same search used for typed queries, so saying
+      // "Maggi noodles" works just as well as reading out digits.
+      document.getElementById('barcodeInput').value=topText;
+      showVoiceStatus('Searching for "'+topText+'"\u2026','info');
+      handleSearchAutocompleteInput(topText);
+      setTimeout(hideVoiceStatus,1200);
     } else {
-      showVoiceStatus('Couldn\'t catch a barcode. Heard: "'+bestText+'" — try again','error');
+      showVoiceStatus('Didn\'t catch that — try again','error');
       setTimeout(hideVoiceStatus,4000);
     }
   };
@@ -1951,6 +1960,79 @@ function pnfUploadLabelPhoto() {
     if (input) input.click();
 }
 
+// ── Search by a photo of the product name (scanner page) ──
+// The live camera (Html5Qrcode) only ever detects barcodes/QR codes — it has
+// no idea what a product's printed name looks like. This reuses the same OCR
+// pipeline as the "upload label photo" fallback, but instead of scoring
+// nutrition facts it takes the best-effort guessed_name (see
+// guess_product_name() in ocr_label_scanner.py) and runs it through the same
+// name search voice input uses, so a photo of the packaging works when no
+// barcode is visible or the camera won't focus on it.
+function triggerNameFromPhoto(){
+  var input=document.getElementById('nameFromPhotoInput');
+  if(input) input.click();
+}
+
+function handleNameFromPhotoSelected(files){
+  if(!files||!files.length) return;
+  var file=files[0];
+  if(!/^image\/(png|jpe?g)$/i.test(file.type)){
+    setNamePhotoStatus('Please choose a JPEG or PNG image.',true);
+    document.getElementById('nameFromPhotoInput').value='';
+    return;
+  }
+  if(file.size>2*1024*1024){
+    setNamePhotoStatus('Image is too large — please use one under 2\u2009MB.',true);
+    document.getElementById('nameFromPhotoInput').value='';
+    return;
+  }
+  uploadNameFromPhoto(file);
+  document.getElementById('nameFromPhotoInput').value='';
+}
+
+function setNamePhotoStatus(msg,isError,spinning){
+  var el=document.getElementById('namePhotoStatus');
+  if(!el) return;
+  el.className='name-photo-status visible'+(isError?' error':'');
+  el.innerHTML=(spinning?'<div class="name-photo-spinner"></div>':'')+'<span>'+msg+'</span>';
+}
+
+async function uploadNameFromPhoto(file){
+  setNamePhotoStatus('Reading the photo\u2026',false,true);
+  try{
+    var formData=new FormData();
+    formData.append('file',file);
+    var res=await fetch(BACKEND_BASE_URL+'/ocr/scan-label',{method:'POST',body:formData});
+
+    if(res.status===503){
+      setNamePhotoStatus('Photo search isn\u2019t available on this server right now. Try typing or saying the name instead.',true);
+      return;
+    }
+    if(!res.ok){
+      var errBody=await res.json().catch(function(){ return {}; });
+      setNamePhotoStatus(errBody.detail||'Couldn\u2019t read that photo. Try a clearer, well-lit shot of the name.',true);
+      return;
+    }
+
+    var data=await res.json();
+    var guess=(data.guessed_name||'').trim();
+    if(!guess){
+      setNamePhotoStatus('Couldn\u2019t make out a product name in that photo — try typing it instead.',true);
+      return;
+    }
+    setNamePhotoStatus('Think it says: \u201c'+guess+'\u201d — tap a match below, or edit the search.',false);
+    inputEl.value=guess;
+    handleSearchAutocompleteInput(guess);
+  }catch(e){
+    console.error('Name-from-photo error:',e);
+    if(isNetworkError(e)){
+      setNamePhotoStatus('Can\u2019t reach the server to read that photo. Check your connection and try again.',true);
+    } else {
+      setNamePhotoStatus('Something went wrong reading that photo. Please try again.',true);
+    }
+  }
+}
+
 function handleOcrLabelFileSelected(files) {
     if (!files || !files.length) return;
     var file = files[0];
@@ -2025,13 +2107,14 @@ function renderOcrResult(data, file) {
     } catch (e) {}
 
     var hero = buildHeroScoreHTML(score, grade, gradeClass);
+    var guessedName = (data.guessed_name || '').trim();
     resultEl.className = 'visible';
     resultEl.innerHTML =
         hero.html +
         '<div class="barcode-row"><span class="barcode-num">OCR SCAN</span><span class="barcode-status">Scanned from label photo</span></div>' +
         previewHTML +
-        '<div class="product-header"><div><div class="product-name">Scanned Label <span class="source-badge" style="background:#efe6ff;color:#6e46ff;">OCR</span></div>' +
-        '<div class="product-brand">Brand/name unknown \u2014 scored from label text only</div></div></div>' +
+        '<div class="product-header"><div><div class="product-name">' + (guessedName || 'Scanned Label') + ' <span class="source-badge" style="background:#efe6ff;color:#6e46ff;">OCR</span></div>' +
+        '<div class="product-brand">' + (guessedName ? 'Best-effort name guess — scored from label text only' : 'Brand/name unknown — scored from label text only') + '</div></div></div>' +
         ingredientFlagHTML +
         '<div class="section" style="margin-top:16px;"><div class="section-label">Extracted Ingredients</div><div class="info-box">' + (data.ingredients_text || 'Not detected') + '</div></div>' +
         '<div class="section"><div class="section-label">Raw OCR Text</div><div class="info-box" style="white-space:pre-wrap;max-height:160px;overflow:auto;">' + (data.raw_text || 'Not available') + '</div></div>' +
