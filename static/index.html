@@ -400,6 +400,14 @@
         <div class="pref-toggle pref-lime" data-pref="diabetic_friendly" onclick="togglePref(this)"><span class="pref-icon">🩺</span> Diabetic Friendly</div>
         <div class="pref-toggle pref-lime" data-pref="heart_healthy" onclick="togglePref(this)"><span class="pref-icon">❤️</span> Heart Healthy</div>
       </div>
+      <div class="pref-section-title">Label &amp; Ingredients</div>
+      <div class="pref-grid">
+        <div class="pref-toggle pref-lime" data-pref="no_preservatives" onclick="togglePref(this)"><span class="pref-icon">🧪</span> No Preservatives</div>
+        <div class="pref-toggle pref-lime" data-pref="no_artificial_colors" onclick="togglePref(this)"><span class="pref-icon">🎨</span> No Artificial Colors</div>
+        <div class="pref-toggle pref-lime" data-pref="no_artificial_flavors" onclick="togglePref(this)"><span class="pref-icon">🧫</span> No Artificial Flavors</div>
+        <div class="pref-toggle pref-lime" data-pref="no_palm_oil" onclick="togglePref(this)"><span class="pref-icon">🌴</span> No Palm Oil</div>
+        <div class="pref-toggle pref-lime" data-pref="clean_label" onclick="togglePref(this)"><span class="pref-icon">✨</span> Clean Label</div>
+      </div>
       <div class="pref-panel-actions">
         <button class="btn-pref-save" onclick="savePrefs()">✓ Save Preferences</button>
         <button class="btn-pref-reset" onclick="resetPrefs()">Reset</button>
@@ -647,7 +655,61 @@
 <div class="container" style="margin-top:16px;">
   <div class="about-card">
     <h3>📊 About Swapify Health Score</h3>
-    <p>Rates food <strong>0–10</strong>, starting from a neutral <strong>base of 5.0</strong> — a high score has to be earned, not assumed. Nutrition penalties: sugar &gt;5g (−1), &gt;15g (−2); sat fat &gt;3g (−1), &gt;6g (−2); sodium &gt;400mg (−2), &gt;800mg (−3). Nutrition bonuses: protein &gt;8g (+1), fiber &gt;5g (+1). When an ingredient list is available, individual ingredients are also matched against Swapify's Ingredient Risk &amp; Benefit framework (position-weighted: top‑3 ×1.5, mid ×1.0, trace ×0.5) and capped per category alongside the nutrition penalties above. A <strong>Transparency Multiplier</strong> (×0.95–×1.05) is applied last based on how clearly additives are disclosed. See the full Score Breakdown on any scanned product.</p>
+    <p class="about-card-intro">Every product starts neutral and <strong>earns</strong> its score — nothing is assumed. Here's exactly how each part of the label adds up:</p>
+
+    <table class="how-table">
+      <thead>
+        <tr><th>Component</th><th>What it means</th><th>Effect on score</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-base">⚖️</span>Base Score</td>
+          <td>Neutral starting point for every product</td>
+          <td><span class="how-effect how-effect-neutral">Starts at 5.0</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">🍬</span>Sugar Penalty</td>
+          <td>Docked when sugar per serving is high</td>
+          <td><span class="how-effect how-effect-neg">−1 to −2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">🧂</span>Sodium Penalty</td>
+          <td>Docked when sodium per serving is high</td>
+          <td><span class="how-effect how-effect-neg">−1 to −2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">🥓</span>Saturated Fat Penalty</td>
+          <td>Docked when saturated fat per serving is high</td>
+          <td><span class="how-effect how-effect-neg">−1 to −2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-good">💪</span>Protein Bonus</td>
+          <td>Rewarded when protein per serving is high</td>
+          <td><span class="how-effect how-effect-pos">+1 to +2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-good">🌾</span>Fiber Bonus</td>
+          <td>Rewarded when fiber per serving is high</td>
+          <td><span class="how-effect how-effect-pos">+1 to +2 pts</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-bad">⚠️</span>Ingredient Penalties</td>
+          <td>Harmful ingredients — palm oil, MSG, artificial dyes, and more</td>
+          <td><span class="how-effect how-effect-neg">−0.5 to −0.8 each</span></td>
+        </tr>
+        <tr>
+          <td class="how-comp"><span class="how-comp-icon how-icon-neutral">🔍</span>Transparency Multiplier</td>
+          <td>Vague labelling (e.g. just "flavours") nudges the final score down</td>
+          <td><span class="how-effect how-effect-mult">×0.95–×1.05</span></td>
+        </tr>
+        <tr class="how-final-row">
+          <td class="how-comp"><span class="how-comp-icon how-icon-final">🎯</span>Final Score</td>
+          <td>Everything above, combined</td>
+          <td><span class="how-effect how-effect-final">Your health score</span></td>
+        </tr>
+      </tbody>
+    </table>
+
     <div class="score-legend">
       <div class="legend-item score-a">A 9–10</div>
       <div class="legend-item score-b">B 7–8</div>

@@ -131,7 +131,7 @@ function updateThemeIcon(t){var i=document.getElementById('themeIcon');if(i) i.t
    TASK 1: SETTINGS PAGE
    ══════════════════════════════════════════════════════ */
 var NOTIF_KEY='swapify-notif-prefs-v1';
-function loadNotifPrefs(){ try{return JSON.parse(localStorage.getItem(NOTIF_KEY)||'{"daily":true,"challenges":true}');}catch(e){return{daily:true,challenges:true};} }
+function loadNotifPrefs(){ try{return JSON.parse(localStorage.getItem(NOTIF_KEY)||'{"daily":true,"challenges":true,"weeklyDigest":false}');}catch(e){return{daily:true,challenges:true,weeklyDigest:false};} }
 function toggleNotifPref(key){
   var p=loadNotifPrefs(); p[key]=!p[key]; localStorage.setItem(NOTIF_KEY,JSON.stringify(p));
   var sw=document.getElementById('settingsNotif_'+key); if(sw) sw.classList.toggle('on',p[key]);
@@ -240,6 +240,8 @@ function renderSettingsPage(){
       + '<div class="settings-switch'+(notif.daily?' on':'')+'" id="settingsNotif_daily" onclick="toggleNotifPref(\'daily\')"></div></div>'
       + '<div class="settings-row"><div><div class="settings-row-label">Challenge Alerts</div><div class="settings-row-sub">New challenges and leaderboard shifts</div></div>'
       + '<div class="settings-switch'+(notif.challenges?' on':'')+'" id="settingsNotif_challenges" onclick="toggleNotifPref(\'challenges\')"></div></div>'
+      + '<div class="settings-row"><div><div class="settings-row-label">Weekly Digest</div><div class="settings-row-sub">Send me a weekly email summary of my scans and score trends</div></div>'
+      + '<div class="settings-switch'+(notif.weeklyDigest?' on':'')+'" id="settingsNotif_weeklyDigest" onclick="toggleNotifPref(\'weeklyDigest\')"></div></div>'
     + '</div>'
     + '<div class="settings-block">'
       + '<div class="settings-block-title">Data &amp; Privacy</div>'
@@ -980,8 +982,24 @@ var PREF_META={
   vegan:{label:'Vegan',icon:'🌿',check:function(n,ing){return!/(milk|cream|egg|butter|honey|gelatin|whey|casein|lactose)/i.test(ing||'');}},
   vegetarian:{label:'Vegetarian',icon:'🥦',check:function(n,ing){return!/(chicken|beef|pork|lamb|fish|shrimp|prawn|mutton|meat)/i.test(ing||'');}},
   diabetic_friendly:{label:'Diabetic Friendly',icon:'🩺',check:function(n){return n.sugar!==undefined&&n.sugar<=5&&(n.fiber===undefined||n.fiber>=2);}},
-  heart_healthy:{label:'Heart Healthy',icon:'❤️',check:function(n){return(n.satFat===undefined||n.satFat<=4)&&(n.sodiumMg===undefined||n.sodiumMg<=400);}}
+  heart_healthy:{label:'Heart Healthy',icon:'❤️',check:function(n){return(n.satFat===undefined||n.satFat<=4)&&(n.sodiumMg===undefined||n.sodiumMg<=400);}},
+  no_preservatives:{label:'No Preservatives',icon:'🧪',check:function(n,ing){return!PREF_PRESERVATIVE_RE.test(ing||'');}},
+  no_artificial_colors:{label:'No Artificial Colors',icon:'🎨',check:function(n,ing){return!PREF_ARTIFICIAL_COLOR_RE.test(ing||'');}},
+  no_artificial_flavors:{label:'No Artificial Flavors',icon:'🧫',check:function(n,ing){return!PREF_ARTIFICIAL_FLAVOR_RE.test(ing||'');}},
+  no_palm_oil:{label:'No Palm Oil',icon:'🌴',check:function(n,ing){return!PREF_PALM_OIL_RE.test(ing||'');}},
+  clean_label:{label:'Clean Label',icon:'✨',check:function(n,ing){
+    var text=ing||'';
+    return !PREF_PRESERVATIVE_RE.test(text)&&!PREF_ARTIFICIAL_COLOR_RE.test(text)&&!PREF_ARTIFICIAL_FLAVOR_RE.test(text);
+  }}
 };
+// Ingredient-text keyword patterns backing the "Label & Ingredients"
+// preferences above — mirrors the additive keyword lists the backend scorer
+// (src/app.py) already uses for its own penalty/clean-label logic, so a
+// product that's flagged there matches the same way here.
+var PREF_PRESERVATIVE_RE=/(tbhq|\bbha\b|\bbht\b|sodium benzoate|potassium sorbate|calcium propionate|sodium nitrite|sodium nitrate|potassium nitrite|potassium nitrate|sul(p|f)ur dioxide|sodium metabisul(p|f)ite|sul(p|f)ite|sorbic acid|benzoic acid|preservative|\bins\s?2\d{2}\b|\be\s?2\d{2}\b)/i;
+var PREF_ARTIFICIAL_COLOR_RE=/(tartrazine|sunset yellow|allura red|ponceau|carmoisine|azorubine|brilliant blue|indigo carmine|indigotine|quinoline yellow|erythrosine|fast green|patent blue|artificial colou?r|synthetic colou?r|fd\s?&\s?c|\bins\s?1\d{2}\b|\be\s?1\d{2}\b)/i;
+var PREF_ARTIFICIAL_FLAVOR_RE=/(artificial flavou?ring|artificial flavou?r|synthetic flavou?r|nature identical flavou?r)/i;
+var PREF_PALM_OIL_RE=/(palm oil|palmolein|palm fat|palm kernel)/i;
 function loadPrefs(){ try{userPrefs=JSON.parse(localStorage.getItem(PREF_KEY)||'{}');}catch(e){userPrefs={};} }
 function savePrefs(){
   document.querySelectorAll('#prefOverlay .pref-toggle').forEach(function(el){ userPrefs[el.getAttribute('data-pref')]=el.classList.contains('active'); });
@@ -2234,7 +2252,11 @@ function renderOcrResult(data, file) {
         previewHTML = '<img src="' + objUrl + '" alt="Scanned label" style="width:140px;max-height:140px;object-fit:cover;display:block;margin:0 auto 16px;border-radius:16px;box-shadow:0 4px 16px rgba(0,0,0,0.15);">';
     } catch (e) {}
 
-    var hero = buildHeroScoreHTML(score, grade, gradeClass);
+    var ocrHighRisk = (data.ingredient_flags || []).some(function(f){
+        var risk = ((f && (f.risk || f.severity)) || '').toString().toLowerCase();
+        return risk === 'severe' || risk === 'high';
+    });
+    var hero = buildHeroScoreHTML(score, grade, gradeClass, score > 7 && !ocrHighRisk);
     var guessedName = (data.guessed_name || '').trim();
     resultEl.className = 'visible';
     resultEl.innerHTML =
@@ -2282,7 +2304,7 @@ var HERO_GRADE_COLORS = {
   F: { light: '#F4432E', dark: '#ff5a4a', bgLight: '#FDE9E7', bgDark: '#300a08' }
 };
 
-function buildHeroScoreHTML(score, grade, gradeClass) {
+function buildHeroScoreHTML(score, grade, gradeClass, qualifiesBetterForYou) {
     _heroScoreUidCounter += 1;
     var uid = 'h' + _heroScoreUidCounter + '_' + Date.now();
     var g = (grade || 'C').toUpperCase();
@@ -2291,6 +2313,7 @@ function buildHeroScoreHTML(score, grade, gradeClass) {
     var strokeColor = isDark ? colorSet.dark : colorSet.light;
     var pillBg = isDark ? colorSet.bgDark : colorSet.bgLight;
     var clampedScore = Math.max(0, Math.min(10, Number(score) || 0));
+    var betterForYouHTML = buildBetterForYouBadgeHTML(qualifiesBetterForYou, 'better-for-you-badge-dial');
 
     var html =
         '<div class="hero-score-card ' + (gradeClass || '') + '" id="heroCard-' + uid + '" data-uid="' + uid + '" data-score="' + clampedScore + '" data-stroke="' + strokeColor + '">' +
@@ -2309,6 +2332,7 @@ function buildHeroScoreHTML(score, grade, gradeClass) {
                     '<div class="hero-score-grade-pill" style="color:' + strokeColor + ';background:' + pillBg + ';">Grade ' + g + '</div>' +
                 '</div>' +
             '</div>' +
+            betterForYouHTML +
         '</div>';
 
     return { html: html, uid: uid };
@@ -2703,7 +2727,7 @@ function renderSwapify(prod){
   var prefHTML=buildPrefMatchHTML(prod.normalized,prod.ingredients);
   var breakdownHTML=buildBreakdownHTML(r);
   var ingredientFlagHTML=buildIngredientFlagsHTML(r.ingredientFlags);
-  var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass);
+  var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass,betterForYouQualifies(p,r));
   resultEl.className='visible';
   resultEl.innerHTML=
     hero.html+
@@ -2744,7 +2768,7 @@ function renderOFF(prod){
   var breakdownHTML=buildBreakdownHTML(r);
   var ingredientFlagHTML=buildIngredientFlagsHTML(r.ingredientFlags);
   var imgWrapperId='off-img-'+bc.replace(/\W/g,'');
-  var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass);
+  var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass,betterForYouQualifies(p,r));
   resultEl.className='visible';
   resultEl.innerHTML=
     hero.html+
@@ -2796,12 +2820,14 @@ function renderAlternatives(alts,scannedProd){
     var imgHTML=alt.image_url?'<img src="'+resolveBackendUrl(alt.image_url)+'" onerror="onImgError(this)">':PH_SVG;
     var inCompare=isInCompareList(alt.barcode);
     var swapSaved=isSwapSaved(scannedProd.barcode,alt.barcode);
+    var altHighRisk=(alt.ingredient_flags||[]).some(function(f){var risk=((f&&(f.risk||f.severity))||'').toString().toLowerCase();return risk==='severe'||risk==='high';});
+    var altBadgeHTML=buildBetterForYouBadgeHTML(alt.health_score>7&&!altHighRisk,'better-for-you-badge-thumb');
     return'<div class="alt-card">'
       +'<button class="alt-add-compare-btn'+(inCompare?' in-compare':'')+'" data-compare-barcode="'+alt.barcode+'" title="'+(inCompare?'Remove from compare':'Add to compare')+'" onclick="addAltToCompareList(window.__altLookup[\''+alt.barcode+'\'])">'+(inCompare?'✓':'+')+'</button>'
       +'<div class="alt-card-badges"><div class="alt-swap-badge">💚 Healthier Swap</div>'
       +(hasPrefs&&alt.prefScore>0?'<div class="alt-pref-ribbon">✦ Pref Match</div>':'')
       +'</div>'
-      +'<div class="alt-card-img">'+imgHTML+'</div>'
+      +'<div class="alt-card-img" style="position:relative;">'+altBadgeHTML+imgHTML+'</div>'
       +'<div class="alt-card-name">'+(alt.product_name||'Unknown')+'</div>'
       +'<div class="alt-card-brand">'+(alt.brand||'')+'</div>'
       +'<div class="alt-score-row"><div class="alt-score-badge '+gc+'">'+gr+'<span class="alt-lbl">'+alt.health_score+'/10</span></div><span class="alt-delta-pill'+(deltaPositive?'':' neg')+'">'+(deltaPositive?'+':'')+alt.delta+' pts</span></div>'
@@ -3112,6 +3138,8 @@ function syncMonthlyPanelToVisiblePage(){
   mpDst.innerHTML=mpSrc.innerHTML;
   var visibleCanvas=mpDst.querySelector('#monthlyTrendCanvas');
   if(visibleCanvas) renderMonthlyTrendChart(calcMonthlyStats(monthlyOffset),visibleCanvas);
+  var visibleCatCanvas=mpDst.querySelector('#monthlyCategoryCanvas');
+  if(visibleCatCanvas) renderMonthlyCategoryChart(calcMonthlyStats(monthlyOffset),visibleCatCanvas);
 }
 
 var MONTHLY_REPORT_URL=BACKEND_BASE_URL+'/monthly-report';
@@ -3272,11 +3300,60 @@ function renderMonthlyPanel(){
     +'<div class="monthly-chart-row">'
     +'<div class="monthly-chart-block"><div class="monthly-chart-label">Score Trend</div><div class="chart-canvas-wrap"><canvas id="monthlyTrendCanvas"></canvas></div>'
     +'<div class="monthly-trend-pill '+trendCls+'">'+trendIcon+' '+trendText+'</div></div>'
-    +'<div class="monthly-chart-block"><div class="monthly-chart-label">Category Breakdown</div>'+catBarsHTML+'</div>'
+    +'<div class="monthly-chart-block"><div class="monthly-chart-label">Category Breakdown</div>'
+    +'<div class="chart-canvas-wrap chart-canvas-wrap-donut"><canvas id="monthlyCategoryCanvas"></canvas></div>'
+    +catBarsHTML+'</div>'
     +'</div>'
     +'</div></div>';
 
   renderMonthlyTrendChart(stats);
+  renderMonthlyCategoryChart(stats);
+}
+
+/* Task: Monthly Report category breakdown as a real Chart.js doughnut chart
+   (alongside the existing per-category bar rows), using the app's teal/lime
+   palette. Follows the exact same explicit-canvas pattern as
+   renderMonthlyTrendChart — see the comment on syncMonthlyPanelToVisiblePage
+   for why that's required (hidden template canvas vs. visible clone canvas
+   sharing one id). */
+var MONTHLY_CATEGORY_PALETTE_VARS=['--accent','--lime','--navy-light','--coral'];
+var MONTHLY_CATEGORY_PALETTE_FALLBACKS=['#1CB399','#C6F135','#0E7C6E','#F4432E','#7cb342','#5b86e5','#00c9a7','#e0a300'];
+function renderMonthlyCategoryChart(stats,canvasEl){
+  var canvas=canvasEl||document.getElementById('monthlyCategoryCanvas');
+  if(!canvas||typeof Chart==='undefined') return;
+  var catEntries=Object.keys(stats.catCounts).sort(function(a,b){return stats.catCounts[b]-stats.catCounts[a];});
+  var key=canvasEl?'categoryVisible':'category';
+  if(!catEntries.length){
+    if(monthlyChartInstances[key]){ monthlyChartInstances[key].destroy(); monthlyChartInstances[key]=null; }
+    return;
+  }
+  var rootStyles=getComputedStyle(document.documentElement);
+  var palette=MONTHLY_CATEGORY_PALETTE_VARS.map(function(v){return rootStyles.getPropertyValue(v).trim();}).concat(MONTHLY_CATEGORY_PALETTE_FALLBACKS).filter(Boolean);
+  var cardBg=rootStyles.getPropertyValue('--card-bg').trim()||'#ffffff';
+  var textColor=rootStyles.getPropertyValue('--text-muted').trim()||'#6a7a9a';
+  var labels=catEntries.map(function(c){return c.replace(/_/g,' ');});
+  var data=catEntries.map(function(c){return stats.catCounts[c];});
+  if(monthlyChartInstances[key]){ monthlyChartInstances[key].destroy(); }
+  monthlyChartInstances[key]=new Chart(canvas.getContext('2d'),{
+    type:'doughnut',
+    data:{
+      labels:labels,
+      datasets:[{
+        data:data,
+        backgroundColor:labels.map(function(_,i){return palette[i%palette.length];}),
+        borderColor:cardBg,
+        borderWidth:2
+      }]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      cutout:'62%',
+      plugins:{
+        legend:{position:'right',labels:{color:textColor,boxWidth:10,padding:8,font:{size:10}}}
+      }
+    }
+  });
 }
 
 function renderMonthlyTrendChart(stats,canvasEl){
@@ -4600,10 +4677,12 @@ function renderCategoryDetailView(catId){
   var listHTML=items.length
     ? items.map(function(item,i){
         var gc=item.score>=9?'score-a':item.score>=7?'score-b':item.score>=5?'score-c':item.score>=3?'score-d':'score-f';
+        var catBadgeHTML=buildBetterForYouBadgeHTML(item.score>7,'better-for-you-badge-list');
         return '<div class="cat-product-item" onclick="quickScan(\''+item.barcode+'\')">'
           +'<div class="cat-product-rank">#'+(i+1)+'</div>'
           +'<div class="cat-product-score '+gc+'">'+item.grade+'</div>'
           +'<div class="cat-product-info"><div class="cat-product-name">'+(item.name||'Unknown')+'</div><div class="cat-product-brand">'+(item.brand||'')+' \u00b7 '+item.score+'/10</div></div>'
+          +catBadgeHTML
           +'</div>';
       }).join('')
     : '<div class="cat-empty">No products found in this category.</div>';
@@ -5457,6 +5536,22 @@ function computeRecommendedBadgeSync(resultLike){
     return risk==='severe'||risk==='high';
   });
   return !hasHighRisk;
+}
+// "Better For You" badge — visually distinct from the grade letter: a small
+// green pill with a shield/check icon rather than a lime star. Shares the
+// same qualifying bar as the "Swapify Recommended" badge (score > 7 and no
+// Severe/High risk ingredients) since that's this app's one established
+// definition of "genuinely healthier", but renders differently and in
+// different places (score dial, product card thumbnails) per the brief.
+function betterForYouQualifies(productData,resultLike){
+  if(productData && typeof productData.is_recommended==='boolean') return productData.is_recommended;
+  return computeRecommendedBadgeSync(resultLike);
+}
+function buildBetterForYouBadgeHTML(qualifies,extraClass){
+  if(!qualifies) return '';
+  return '<span class="better-for-you-badge'+(extraClass?' '+extraClass:'')+'" title="A genuinely healthier pick — score above 7 with no high-risk ingredients">'
+    +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5v5.5c0 5-3.4 8.9-8 10-4.6-1.1-8-5-8-10V5.5L12 2z"/><polyline points="8.5 12 11 14.5 15.5 9.5"/></svg>'
+    +'Better For You</span>';
 }
 function buildRecommendedBadgeHTML(productData,resultLike,small){
   var qualifies;

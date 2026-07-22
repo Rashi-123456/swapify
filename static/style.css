@@ -757,7 +757,50 @@ button:active{transform:translateY(0) scale(0.99);}
 .about-card{background:var(--card-bg);border-radius:16px;padding:20px 22px;box-shadow:var(--shadow);border:1px solid var(--border);}
 .about-card h3{font-size:0.96rem;font-weight:700;color:var(--text);margin-bottom:8px;}
 .about-card p{font-size:0.81rem;color:var(--text-muted);line-height:1.7;margin-bottom:7px;}
+.about-card-intro{margin-bottom:14px !important;}
 .score-legend{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:10px;}
+
+/* ── HOW SCORING WORKS TABLE ── */
+.how-table{width:100%;border-collapse:separate;border-spacing:0;font-size:0.82rem;margin-bottom:16px;border-radius:12px;overflow:hidden;border:1px solid var(--border);}
+.how-table thead th{background:var(--navy-deep);color:var(--lime);font-family:'DM Mono',monospace;font-size:0.64rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;padding:11px 14px;text-align:left;}
+.how-table thead th:last-child{text-align:right;}
+.how-table tbody td{padding:11px 14px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:0.79rem;vertical-align:middle;}
+.how-table tbody tr:last-child td{border-bottom:none;}
+.how-table tbody tr:nth-child(odd){background:var(--off-white);}
+.how-table tbody tr:hover{background:rgba(28,179,153,0.08);}
+.how-comp{font-family:'Sora',sans-serif;font-weight:700;color:var(--text);white-space:nowrap;display:flex;align-items:center;gap:9px;}
+.how-comp-icon{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:8px;font-size:0.86rem;flex-shrink:0;}
+.how-icon-base{background:rgba(94,111,161,0.14);}
+.how-icon-bad{background:rgba(244,67,46,0.12);}
+.how-icon-good{background:rgba(0,168,117,0.14);}
+.how-icon-neutral{background:rgba(224,163,0,0.14);}
+.how-icon-final{background:linear-gradient(135deg,var(--lime),var(--accent));}
+.how-effect{display:inline-block;font-family:'DM Mono',monospace;font-size:0.72rem;font-weight:700;padding:4px 10px;border-radius:100px;white-space:nowrap;}
+.how-effect-neutral{background:rgba(94,111,161,0.14);color:#5e6fa1;}
+.how-effect-neg{background:rgba(244,67,46,0.10);color:#e0392a;}
+.how-effect-pos{background:rgba(0,168,117,0.12);color:#00a875;}
+.how-effect-mult{background:rgba(224,163,0,0.14);color:#b07d00;}
+.how-effect-final{background:linear-gradient(135deg,var(--lime),var(--lime-dark));color:var(--navy-deep);font-weight:800;}
+[data-theme="dark"] .how-table thead th{color:var(--navy);}
+[data-theme="dark"] .how-effect-neg{color:#ff8a7a;}
+[data-theme="dark"] .how-effect-pos{color:#3ddc82;}
+[data-theme="dark"] .how-effect-mult{color:#ffd166;}
+[data-theme="dark"] .how-effect-neutral{color:#a8b6e8;}
+@media(max-width:600px){
+  .how-table{font-size:0.72rem;}
+  .how-table thead th{padding:8px 8px;font-size:0.58rem;}
+  .how-table tbody td{padding:8px;font-size:0.7rem;}
+  .how-comp{gap:6px;}
+  .how-comp-icon{width:21px;height:21px;font-size:0.72rem;}
+  .how-effect{font-size:0.62rem;padding:3px 7px;}
+}
+
+/* ── "BETTER FOR YOU" BADGE (distinct from the grade letter) ── */
+.better-for-you-badge{display:inline-flex;align-items:center;gap:4px;background:linear-gradient(135deg,#2ECC71,#1CB399);color:#fff;border-radius:100px;padding:4px 11px;font-family:'Poppins',sans-serif;font-size:0.64rem;font-weight:700;letter-spacing:0.2px;white-space:nowrap;box-shadow:0 3px 10px rgba(46,204,113,0.35);}
+.better-for-you-badge svg{width:11px;height:11px;flex-shrink:0;}
+.better-for-you-badge-dial{margin-top:9px;}
+.better-for-you-badge-thumb{position:absolute;top:6px;left:6px;z-index:2;font-size:0.56rem;padding:3px 8px;}
+.better-for-you-badge-list{flex-shrink:0;}
 .legend-item{padding:6px 7px;border-radius:8px;text-align:center;font-family:'DM Mono',monospace;font-size:0.71rem;font-weight:600;}
 footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.76rem;font-family:'DM Mono',monospace;}
 
@@ -909,6 +952,7 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
 .monthly-chart-row{display:grid;grid-template-columns:1.3fr 1fr;gap:16px;margin-bottom:6px;}
 .monthly-chart-block{background:var(--off-white);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;}
 .chart-canvas-wrap{position:relative;width:100%;height:200px;}
+.chart-canvas-wrap-donut{height:170px;margin-bottom:12px;}
 .monthly-chart-label{font-size:0.68rem;font-family:'DM Mono',monospace;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px;}
 .category-bar-row{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:0.76rem;}
 .category-bar-label{width:84px;flex-shrink:0;font-family:'DM Mono',monospace;font-size:0.7rem;color:var(--text-muted);text-transform:capitalize;}
