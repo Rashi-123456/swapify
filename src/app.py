@@ -132,6 +132,20 @@ class MySwapNoteUpdate(BaseModel):
     note: str = ""
 
 
+class CompareListItemAdd(BaseModel):
+    barcode: str
+    name: Optional[str] = None
+    brand: Optional[str] = None
+    source: Optional[str] = None
+    badge_class: Optional[str] = None
+    # JSON-serializable snapshots of the score result / normalized nutrition
+    # used to render the comparison table — stored as opaque blobs since
+    # their shape belongs to the frontend's scoring code, not the backend.
+    result: Optional[dict] = None
+    normalized: Optional[dict] = None
+    ingredients: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     question: str
     barcode: Optional[str] = None
@@ -648,7 +662,7 @@ def login(user: UserLogin):
 def profile(user_id: int = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, email, created_at FROM users WHERE id = ?", (user_id,))
+    cursor.execute("SELECT id, username, email, created_at, theme_preference FROM users WHERE id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
@@ -691,7 +705,24 @@ def profile(user_id: int = Depends(get_current_user)):
     result = dict(row)
     result["total_scans"] = total_scans
     result["streak"] = streak
+    result["theme"] = result.pop("theme_preference", None)
     return result
+
+
+@app.post("/theme")
+def set_theme(body: dict, user_id: int = Depends(get_current_user)):
+    """Save the authenticated user's dark/light mode preference so it travels
+    with the account instead of staying stuck on whichever browser last set
+    it. Body: ``{"theme": "dark"}`` or ``{"theme": "light"}``."""
+    theme = (body or {}).get("theme")
+    if theme not in ("dark", "light"):
+        raise HTTPException(status_code=400, detail="theme must be 'dark' or 'light'")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET theme_preference = ? WHERE id = ?", (theme, user_id))
+    conn.commit()
+    conn.close()
+    return {"theme": theme}
 
 
 # Mirrors BADGE_DEFS in script.js: same ids and targets. Computed from every
@@ -2415,6 +2446,101 @@ def log_scan_history(
     return {"logged": True}
 
 
+class LocalHistoryImportItem(BaseModel):
+    barcode: str
+    product_name: Optional[str] = None
+    health_score: Optional[float] = None
+    # ISO timestamp from the client's local history entry — preserved as the
+    # scan's real date rather than defaulting to "now", so importing old
+    # scans doesn't make them all look like they happened today (which would
+    # also wrongly inflate today's streak/daily-goal count).
+    timestamp: Optional[str] = None
+
+
+class LocalHistoryImportRequest(BaseModel):
+    items: List[LocalHistoryImportItem] = []
+
+
+@app.post("/scan-history/import")
+def import_local_scan_history(body: LocalHistoryImportRequest, user_id: int = Depends(get_current_user)):
+    """One-time backfill for scans that only ever lived in a browser's local
+    history — from before an account's scans were reliably written to
+    scan_history server-side (e.g. anything scanned via the CSV database or
+    Open Food Facts before /scan-history existed, or anything scanned while
+    logged in as a local-only session — see retryBackendConnection() in
+    script.js). Without this, that history is invisible to the backend
+    forever: totals/streak/badges only ever count what's actually in
+    scan_history, and there's no way to retroactively know about scans that
+    were never sent there.
+
+    Each item's own timestamp is preserved (falls back to "now" only if
+    missing) so backfilled scans land on the right day for streak/daily
+    trend purposes instead of all appearing to happen today. Capped at 500
+    items per call (matches the local history cap in script.js) and skips
+    anything already present for this exact barcode+day, so re-running this
+    (e.g. the user clicks the button twice) doesn't create duplicates.
+    """
+    items = body.items[:500]
+    if not items:
+        return {"imported": 0, "skipped": 0}
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Existing (barcode, day) pairs for this user, so we don't double-import
+    # a scan that's already been recorded (either normally, or by a previous
+    # run of this same import).
+    cursor.execute(
+        "SELECT barcode, date(scanned_at) AS d FROM scan_history WHERE user_id = ?",
+        (user_id,)
+    )
+    existing = {(r["barcode"], r["d"]) for r in cursor.fetchall()}
+
+    imported = 0
+    skipped = 0
+    for item in items:
+        barcode = (item.barcode or "").strip()
+        if not barcode:
+            skipped += 1
+            continue
+        ts = item.timestamp
+        scanned_at = None
+        if ts:
+            try:
+                # Accept a JS ISO string ("...Z" or with an offset) and store
+                # it in the same "YYYY-MM-DD HH:MM:SS" UTC form the rest of
+                # scan_history uses.
+                parsed = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                scanned_at = parsed.strftime("%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                scanned_at = None
+        day = (scanned_at or datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))[:10]
+        if (barcode, day) in existing:
+            skipped += 1
+            continue
+
+        if scanned_at:
+            cursor.execute(
+                "INSERT INTO scan_history (device_id, user_id, barcode, product_name, health_score, scanned_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (None, user_id, barcode, item.product_name, item.health_score, scanned_at)
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO scan_history (device_id, user_id, barcode, product_name, health_score) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (None, user_id, barcode, item.product_name, item.health_score)
+            )
+        existing.add((barcode, day))
+        imported += 1
+
+    conn.commit()
+    conn.close()
+    return {"imported": imported, "skipped": skipped}
+
+
 @app.get("/history")
 def get_history(user_id: int = Depends(get_current_user)):
     conn = get_db_connection()
@@ -2770,6 +2896,85 @@ def get_my_swaps(user_id: int = Depends(get_current_user)):
     )
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
+    return rows
+
+
+# ── Compare List (Bug 1) ──
+# Was pure sessionStorage — wiped on tab close and never visible in any
+# other browser. Wired up the same way Favorites/My Swaps are: push on every
+# change, pull-and-merge on login. Capped at 4 items server-side too (the
+# frontend already enforces this, but a client bug or a second device adding
+# concurrently shouldn't be able to grow the list unbounded).
+MAX_COMPARE_ITEMS = 4
+
+
+@app.post("/compare-list")
+def add_compare_list_item(item: CompareListItemAdd, user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM compare_list_items WHERE user_id = ? AND barcode = ?", (user_id, item.barcode))
+    if cursor.fetchone():
+        conn.close()
+        return {"message": "Already in compare list"}
+
+    cursor.execute("SELECT COUNT(*) AS cnt FROM compare_list_items WHERE user_id = ?", (user_id,))
+    if cursor.fetchone()["cnt"] >= MAX_COMPARE_ITEMS:
+        conn.close()
+        raise HTTPException(status_code=400, detail=f"Compare list is full (max {MAX_COMPARE_ITEMS})")
+
+    cursor.execute(
+        "INSERT INTO compare_list_items (user_id, barcode, name, brand, source, badge_class, "
+        "result_json, normalized_json, ingredients) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, item.barcode, item.name, item.brand, item.source, item.badge_class,
+         json.dumps(item.result) if item.result is not None else None,
+         json.dumps(item.normalized) if item.normalized is not None else None,
+         item.ingredients)
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Added to compare list"}
+
+
+@app.delete("/compare-list/{barcode}")
+def remove_compare_list_item(barcode: str, user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM compare_list_items WHERE user_id = ? AND barcode = ?", (user_id, barcode))
+    conn.commit()
+    conn.close()
+    return {"message": "Removed from compare list"}
+
+
+@app.delete("/compare-list")
+def clear_compare_list_backend(user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM compare_list_items WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"message": "Compare list cleared"}
+
+
+@app.get("/compare-list")
+def get_compare_list(user_id: int = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT barcode, name, brand, source, badge_class, result_json, normalized_json, "
+        "ingredients, added_at FROM compare_list_items WHERE user_id = ? ORDER BY added_at ASC",
+        (user_id,)
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    for r in rows:
+        try:
+            r["result"] = json.loads(r.pop("result_json")) if r.get("result_json") else None
+        except (ValueError, TypeError):
+            r["result"] = None
+        try:
+            r["normalized"] = json.loads(r.pop("normalized_json")) if r.get("normalized_json") else None
+        except (ValueError, TypeError):
+            r["normalized"] = None
     return rows
 
 
@@ -3212,31 +3417,55 @@ def get_offline_products():
     return results
 
 
+def _normalize_search_text(s: str) -> str:
+    """Lowercase + strip punctuation for tolerant matching. Voice-to-text in
+    particular tends to add trailing punctuation ("maggi noodles.") that
+    would otherwise break an exact substring match against a catalog name
+    that has no such punctuation."""
+    return re.sub(r"[^\w\s]", " ", (s or "").lower()).strip()
+
+
 @app.get("/search/autocomplete")
 def search_autocomplete(q: str, limit: int = 8):
     """Smart Search autocomplete (Task 2).
 
-    Returns lightweight typeahead suggestions as the user types: product name +
-    brand + barcode, matched against ``product_name`` and ``brand`` with SQL
-    ``LIKE``. Prefix matches are ranked ahead of mid-word matches. ``limit`` is
-    clamped to 1-10 (default 8); a blank query returns an empty list.
+    Returns lightweight typeahead suggestions as the user types/speaks: product
+    name + brand + barcode. Matching is word-level and punctuation-tolerant —
+    every word in the (normalized) query has to appear *somewhere* in the
+    product's name or brand, but not necessarily contiguously or in the same
+    order. That's what lets "maggi noodles" (or a voice transcript like
+    "maggi noodles." with a trailing period) match a catalog entry like
+    "Maggi 2-Minute Masala Noodles" that it isn't an exact substring of.
+    ``limit`` is clamped to 1-10 (default 8); a blank query returns an empty
+    list.
 
     Example response:
         {"suggestions": [
             {"product_name": "Maggi noodles", "brand": "Maggi", "barcode": "8901058005783"}
         ]}
     """
-    query = (q or "").strip()
-    if not query:
-        return {"query": query, "count": 0, "suggestions": []}
+    raw_query = (q or "").strip()
+    normalized = _normalize_search_text(raw_query)
+    if not normalized:
+        return {"query": raw_query, "count": 0, "suggestions": []}
 
     limit = max(1, min(limit, 10))
-    like = f"%{query}%"
-    prefix = f"{query.lower()}%"
+    words = normalized.split()[:6]  # cap so a long spoken sentence can't build a huge query
+    if not words:
+        return {"query": raw_query, "count": 0, "suggestions": []}
+
+    prefix = f"{normalized}%"
+    like_pairs = []
+    and_params = []
+    for w in words:
+        like_pairs.append("(LOWER(product_name) LIKE ? OR LOWER(brand) LIKE ?)")
+        like_w = f"%{w}%"
+        and_params.extend([like_w, like_w])
+    and_where = " AND ".join(like_pairs)
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
+    cursor.execute(f'''
         SELECT barcode, product_name, brand,
                CASE
                    WHEN LOWER(product_name) LIKE ? THEN 0
@@ -3244,11 +3473,29 @@ def search_autocomplete(q: str, limit: int = 8):
                    ELSE 2
                END AS match_rank
         FROM products
-        WHERE product_name LIKE ? OR brand LIKE ?
+        WHERE {and_where}
         ORDER BY match_rank, product_name
         LIMIT ?
-    ''', (prefix, prefix, like, like, limit))
+    ''', [prefix, prefix] + and_params + [limit])
     rows = cursor.fetchall()
+
+    if not rows and len(words) > 1:
+        # Nothing matched *every* word (a mis-heard word, an extra word the
+        # user said, different phrasing) — loosen to "at least one word
+        # matches" instead, ranked by how many of the query's words each
+        # result actually contains, so a close-but-imperfect query still
+        # surfaces the nearest catalog matches rather than nothing at all.
+        or_where = " OR ".join(like_pairs)
+        rank_expr = " + ".join(["(CASE WHEN LOWER(product_name) LIKE ? OR LOWER(brand) LIKE ? THEN 1 ELSE 0 END)" for _ in words])
+        cursor.execute(f'''
+            SELECT barcode, product_name, brand, ({rank_expr}) AS word_matches
+            FROM products
+            WHERE {or_where}
+            ORDER BY word_matches DESC, product_name
+            LIMIT ?
+        ''', and_params + and_params + [limit])
+        rows = cursor.fetchall()
+
     conn.close()
 
     suggestions = [{
@@ -3256,7 +3503,7 @@ def search_autocomplete(q: str, limit: int = 8):
         "brand": r["brand"],
         "barcode": r["barcode"],
     } for r in rows]
-    return {"query": query, "count": len(suggestions), "suggestions": suggestions}
+    return {"query": raw_query, "count": len(suggestions), "suggestions": suggestions}
 
 
 # Only the columns /search actually needs — identity fields, the nutrient
@@ -5796,6 +6043,37 @@ def ensure_performance_and_image_schema():
         if "grade" not in fav_cols:
             cur.execute("ALTER TABLE favorites ADD COLUMN grade TEXT")
 
+        # --- Bug fix (dark/light mode not syncing across browsers): theme was
+        # 100% localStorage. This column lets it travel with the account like
+        # preferences/favorites/etc. do — see POST /theme and its use in
+        # /profile below.
+        user_cols = {r[1] for r in cur.execute("PRAGMA table_info(users)")}
+        if "theme_preference" not in user_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN theme_preference TEXT")
+
+        # --- Compare list (Bug fix: was 100% sessionStorage, never synced and
+        # wiped on tab close). Same denormalized-snapshot approach as
+        # favorites/My Swaps, since a compared product may not be in our own
+        # `products` table either.
+        cur.executescript('''
+            CREATE TABLE IF NOT EXISTS compare_list_items (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL,
+                barcode      TEXT NOT NULL,
+                name         TEXT,
+                brand        TEXT,
+                source       TEXT,
+                badge_class  TEXT,
+                result_json  TEXT,
+                normalized_json TEXT,
+                ingredients  TEXT,
+                added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, barcode),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_compare_list_user ON compare_list_items(user_id);
+        ''')
+
         # --- My Swaps (Bug 2): this feature had no backend table at all before —
         # it was pure localStorage, which is exactly why a swap saved in one
         # browser never showed up in another. Stores a denormalized snapshot
@@ -6372,6 +6650,36 @@ def create_shopping_list(
     preferences = load_user_preferences(user_id)
     result = load_shopping_list(list_id, preferences)
     return {"message": "Shopping list created", **result}
+
+
+@app.get("/shopping-list/mine")
+def get_my_shopping_list(user_id: int = Depends(get_current_user)):
+    """Return this account's most recent shopping list.
+
+    POST /shopping-list always creates a brand-new list rather than updating
+    one in place (see its docstring), so the frontend keeps the resulting
+    list id in localStorage to target Optimize/Replace/Delete later — but
+    that id existing only in one browser's localStorage meant a different
+    browser had no way to even find the list to sync it, regardless of how
+    many times it was saved. This looks up the account's newest list by id
+    (ids are auto-incrementing, so the highest one is the most recent) so any
+    browser/device can discover and pull it down.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM shopping_lists WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {"id": None, "items": []}
+    preferences = load_user_preferences(user_id)
+    result = load_shopping_list(row["id"], preferences)
+    if result is None:
+        return {"id": None, "items": []}
+    return result
 
 
 @app.get("/shopping-list/{list_id}")

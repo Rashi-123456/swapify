@@ -677,6 +677,10 @@ button:active{transform:translateY(0) scale(0.99);}
 .profile-avatar-lg{width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--lime),var(--accent));display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:700;color:var(--navy-deep);margin-bottom:10px;border:3px solid rgba(255,255,255,0.25);}
 .profile-name{font-family:'Poppins',sans-serif;font-size:1.2rem;font-weight:800;color:#fff;margin-bottom:2px;}
 .profile-email{font-family:'DM Mono',monospace;font-size:0.72rem;color:rgba(255,255,255,0.6);}
+.profile-sync-banner{display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap;background:rgba(255,193,7,0.15);border:1px solid rgba(255,193,7,0.35);border-radius:var(--radius-xs);padding:8px 12px;margin-top:12px;font-size:0.72rem;font-family:'DM Mono',monospace;color:#ffd54f;text-align:center;}
+.profile-sync-banner button{background:rgba(255,213,79,0.2);border:1px solid rgba(255,213,79,0.5);color:#ffd54f;border-radius:100px;padding:4px 12px;font-size:0.7rem;font-family:'DM Mono',monospace;cursor:pointer;transition:all var(--transition);}
+.profile-sync-banner button:hover{background:rgba(255,213,79,0.35);}
+.profile-sync-banner button:disabled{opacity:0.6;cursor:default;}
 .profile-body{padding:18px 22px;}
 .profile-section-title{font-family:'DM Mono',monospace;font-size:0.66rem;letter-spacing:2px;color:var(--gray);text-transform:uppercase;margin:18px 0 10px;}
 .profile-section-title:first-of-type{margin-top:0;}

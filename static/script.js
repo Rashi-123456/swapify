@@ -53,7 +53,11 @@ function resolveBackendUrl(url){
    THEME
    ══════════════════════════════════════════════════════ */
 (function(){var t=localStorage.getItem('swapify-theme')||'light';document.documentElement.setAttribute('data-theme',t);updateThemeIcon(t);})();
-function toggleTheme(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('swapify-theme',n);updateThemeIcon(n);var sw=document.getElementById('settingsDarkModeSwitch');if(sw) sw.classList.toggle('on',n==='dark');}
+function toggleTheme(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('swapify-theme',n);updateThemeIcon(n);var sw=document.getElementById('settingsDarkModeSwitch');if(sw) sw.classList.toggle('on',n==='dark');syncThemeToBackend(n);}
+function syncThemeToBackend(theme){
+  if(typeof isReallyLoggedIn!=='function'||!isReallyLoggedIn()) return;
+  fetch(BACKEND_BASE_URL+'/theme',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({theme:theme})}).catch(function(){});
+}
 
 // ── Hamburger nav menu (collapses the header's 10 nav links once they no
 // longer fit inline, instead of letting them silently overflow/get cut off) ──
@@ -144,8 +148,11 @@ function clearScanHistorySettings(){
 }
 function clearFavoritesSettings(){
   if(!confirm('Remove all saved favorites?')) return;
+  var favs=loadFavorites();
+  favs.forEach(function(f){ syncFavoriteRemoveToBackend(f.barcode); });
   saveFavoritesList([]);
   if(typeof renderFavoritesPanel==='function') renderFavoritesPanel();
+  updateFavBtn(false);
   renderSettingsPage();
 }
 function resetPreferencesSettings(){
@@ -156,6 +163,42 @@ function resetPreferencesSettings(){
 function logoutFromSettings(){
   doLogout();
 }
+// One-time backfill: sends this browser's local scan history to the backend
+// (see POST /scan-history/import in app.py) so scans made before backend
+// sync existed — or made while in a local-only session (see
+// retryBackendConnection()) — aren't permanently invisible to
+// totals/streak/badges just because the backend never knew about them.
+// Tracked per-browser so the button doesn't linger forever once used.
+var LOCAL_HISTORY_IMPORTED_KEY='swapify-local-history-imported-v1';
+async function importLocalScanHistory(){
+  if(!isReallyLoggedIn()) return;
+  var btn=document.getElementById('importHistoryBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Importing…'; }
+  try{
+    var items=loadHistory().map(function(h){
+      return{barcode:h.barcode,product_name:h.name,health_score:h.score,timestamp:h.timestamp};
+    });
+    var res=await fetch(BACKEND_BASE_URL+'/scan-history/import',{
+      method:'POST',
+      headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
+      body:JSON.stringify({items:items})
+    });
+    if(!res.ok) throw new Error('import failed');
+    var data=await res.json();
+    localStorage.setItem(LOCAL_HISTORY_IMPORTED_KEY,'1');
+    // Force a fresh fetch of everything the import just changed.
+    _monthlyBackendCache={}; _monthlyBackendFetchInFlight={}; _backendStreakCache=null; _backendBadgeCache=null;
+    if(typeof syncProfileTotalScansFromBackend==='function') syncProfileTotalScansFromBackend();
+    if(typeof syncBadgesFromBackend==='function') syncBadgesFromBackend();
+    if(typeof renderHomeDashboard==='function') renderHomeDashboard();
+    renderSettingsPage();
+    alert('Imported '+data.imported+' scan'+(data.imported===1?'':'s')+(data.skipped?' ('+data.skipped+' already on your account)':'')+'. Your totals, streak, and achievements will update shortly.');
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='Import →'; }
+    alert('Couldn\u2019t import right now — please try again in a moment.');
+  }
+}
+
 function renderSettingsPage(){
   var dst=document.getElementById('settingsPanelFullPage');
   if(!dst) return;
@@ -201,6 +244,9 @@ function renderSettingsPage(){
     + '<div class="settings-block">'
       + '<div class="settings-block-title">Data &amp; Privacy</div>'
       + '<div class="settings-row-sub" style="margin-bottom:12px;">'+scans.length+' scan'+(scans.length===1?'':'s')+' in history · '+favs.length+' favorite'+(favs.length===1?'':'s')+' saved</div>'
+      + (isReallyLoggedIn()&&!localStorage.getItem(LOCAL_HISTORY_IMPORTED_KEY)&&scans.length ?
+        '<div class="settings-row"><div><div class="settings-row-label">Import local scan history</div><div class="settings-row-sub">Back up this browser\u2019s '+scans.length+' scan'+(scans.length===1?'':'s')+' to your account, so old scans made before syncing existed still count toward your totals, streak, and achievements.</div></div>'
+        + '<button class="page-back-btn" style="padding:8px 14px;" id="importHistoryBtn" onclick="importLocalScanHistory()">Import →</button></div>' : '')
       + '<button class="settings-danger-btn" onclick="clearScanHistorySettings()">Clear Scan History</button>'
       + '<button class="settings-danger-btn" onclick="clearFavoritesSettings()">Clear Favorites</button>'
       + '<button class="settings-danger-btn" onclick="resetPreferencesSettings()">Reset Dietary Preferences</button>'
@@ -348,7 +394,7 @@ async function fetchFavoritesFromBackend(){
     var localOnly=local.filter(function(f){ return !backendBarcodes[f.barcode]; });
     localOnly.forEach(function(f){ syncFavoriteAddToBackend(f.barcode,f.name,f.brand,f.score,f.grade); });
     var merged=backendList.map(function(f){
-      return{barcode:f.barcode,name:f.product_name,brand:f.brand,score:f.health_score,grade:f.grade,addedAt:f.added_at?new Date(f.added_at).getTime():Date.now()};
+      return{barcode:f.barcode,name:f.product_name,brand:f.brand,score:f.health_score,grade:f.grade,addedAt:(parseBackendTimestamp(f.added_at)||new Date()).getTime()};
     }).concat(localOnly);
     saveFavoritesList(merged);
     if(favsPanelOpen) renderFavoritesPanel();
@@ -499,7 +545,13 @@ function _renderWeeklyPanelCore(stats){
   });
 
   // Stats
-  var scansThisWeek=days.reduce(function(s,d){return s+d.scans.length;},0);
+  // Total scans this week comes from stats.total, not from summing the chart
+  // buckets below: the backend path (fetchWeeklySummaryFromBackend) only
+  // ever has ONE synthesized point per day (that day's average score, not
+  // one entry per scan) so counting chart entries undercounted any day with
+  // more than one real scan — 5 scans in a day rendered as "1" here even
+  // though the correct total was already sitting right there in stats.total.
+  var scansThisWeek=stats.total;
   var avgScores=days.filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
   var weekAvg=avgScores.length?Math.round(avgScores.reduce(function(a,b){return a+b;},0)/avgScores.length*10)/10:null;
   var bestDay=days.reduce(function(best,d){return(d.avg!==null&&(best.avg===null||d.avg>best.avg))?d:best;},{avg:null});
@@ -644,6 +696,7 @@ async function performRealLogin(email,pass){
     await fetchFavoritesFromBackend();
     await fetchMySwapsFromBackend();
     await fetchShoppingListFromBackend();
+    await fetchCompareListFromBackend();
     syncBadgesFromBackend();
     closeAuthModal(); openProfilePanel();
   }catch(networkErr){
@@ -707,6 +760,21 @@ async function fetchBackendProfile(token){
 function doLogout(){ clearAuth(); closeProfilePanel(); showPage('home'); }
 function getAuthHeaders(){ if(currentUser&&currentUser.token) return{'Authorization':'Bearer '+currentUser.token}; return{}; }
 function isReallyLoggedIn(){ return !!(currentUser&&currentUser.token&&!currentUser.localOnly); }
+
+// The backend stores timestamps as SQLite's CURRENT_TIMESTAMP default —
+// "YYYY-MM-DD HH:MM:SS" in UTC, with no "T" separator and no "Z"/offset.
+// `new Date(...)` on that exact string is genuinely ambiguous per the JS
+// spec (it's not a form any standard requires engines to parse the same
+// way) — Chrome tends to read it as local time, while Safari/Firefox can
+// read it as UTC or fail to parse it at all, so the *same* favorite/scan
+// showed a different date depending on which browser opened it. Normalizing
+// to real ISO-8601 UTC ("...T...Z") first parses identically everywhere.
+function parseBackendTimestamp(ts){
+  if(!ts) return null;
+  var iso=(''+ts).indexOf('T')===-1 ? (''+ts).replace(' ','T')+'Z' : ts;
+  var d=new Date(iso);
+  return isNaN(d.getTime())?null:d;
+}
 
 /* ══════════════════════════════════════════════════════
    SCAN HISTORY
@@ -779,6 +847,7 @@ function renderProfilePanel(){
   document.getElementById('profileName').textContent=user?user.name:'Guest User';
   document.getElementById('profileEmailDisplay').textContent=user?user.email:'Not logged in';
   document.getElementById('profileLogoutBtn').style.display=user?'':'none';
+  renderSyncBanner();
   var stats=calcDashboardStats();
   document.getElementById('statTotalScans').textContent=stats.total;
   document.getElementById('statAvgScore').textContent=stats.avg!==null?stats.avg:'—';
@@ -794,6 +863,55 @@ function renderProfilePanel(){
   // Reconcile it with the account's true cross-device count once it loads.
   if(typeof isReallyLoggedIn==='function'&&isReallyLoggedIn()) syncProfileTotalScansFromBackend();
 }
+
+function renderSyncBanner(){
+  var el=document.getElementById('profileSyncBanner');
+  if(!el) return;
+  if(currentUser&&currentUser.localOnly){
+    el.style.display='flex';
+    el.innerHTML='\u26A0\uFE0F Working offline — your data isn\u2019t syncing across devices right now.'
+      +'<button id="retrySyncBtn" onclick="retryBackendConnection()">Retry connecting</button>';
+  } else {
+    el.style.display='none';
+    el.innerHTML='';
+  }
+}
+
+// If login happened while the backend was briefly unreachable (a sleeping
+// free-tier server waking up is the most common cause), the session
+// silently became local-only — no token, so every sync feature (streak,
+// favorites, My Swaps, compare list, Smart Cart, theme...) quietly does
+// nothing from then on with no indication anything's wrong. This re-attempts
+// a real login with the same credentials (recovered from the same local
+// record the local-only fallback itself used) so the account can reconnect
+// with one click instead of requiring a manual sign-out/sign-in.
+async function retryBackendConnection(silent){
+  if(!currentUser||!currentUser.localOnly||!currentUser.email) return;
+  var btn=document.getElementById('retrySyncBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Connecting…'; }
+  try{
+    var stored=JSON.parse(localStorage.getItem('swapify-users-v1')||'{}');
+    var rec=stored[currentUser.email];
+    if(!rec||!rec.password){ throw new Error('no local record'); }
+    var res=await fetch(BACKEND_BASE_URL+'/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:currentUser.email,password:atob(rec.password)})
+    });
+    if(!res.ok) throw new Error('backend still unreachable');
+    // performRealLogin re-does the fetch above internally, but it's also
+    // responsible for saveAuth() + the full preferences/favorites/My Swaps/
+    // Smart Cart/compare-list/badges sync cascade — reusing it here instead
+    // of duplicating all of that keeps this one path as the single source
+    // of truth for "what happens on a successful real login."
+    await performRealLogin(currentUser.email,atob(rec.password));
+    renderProfilePanel();
+    if(typeof renderHomeDashboard==='function') renderHomeDashboard();
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='Retry connecting'; }
+    if(!silent) alert('Still can\u2019t reach the server — please try again in a moment.');
+  }
+}
 // Cached once fetched so renderStreakGoalCard() (Home) doesn't need its own
 // separate round-trip right after this one.
 var _backendStreakCache=null;
@@ -804,6 +922,16 @@ async function syncProfileTotalScansFromBackend(){
   try{
     var profile=await fetchBackendProfile(currentUser.token);
     if(!profile) return;
+    if(profile.theme==='dark'||profile.theme==='light'){
+      var localTheme=localStorage.getItem('swapify-theme')||'light';
+      if(profile.theme!==localTheme){
+        document.documentElement.setAttribute('data-theme',profile.theme);
+        localStorage.setItem('swapify-theme',profile.theme);
+        updateThemeIcon(profile.theme);
+        var themeSw=document.getElementById('settingsDarkModeSwitch');
+        if(themeSw) themeSw.classList.toggle('on',profile.theme==='dark');
+      }
+    }
     if(typeof profile.total_scans==='number'){
       var elTotal=document.getElementById('statTotalScans');
       if(elTotal) elTotal.textContent=profile.total_scans;
@@ -2285,10 +2413,62 @@ function logCompareActivity(barcode,allBarcodes){
   }).catch(function(){});
 }
 
+// Compare list used to live in sessionStorage — wiped the moment the tab
+// closed, and never visible in any other browser even within the same
+// session. It's plain localStorage now (persists like Favorites/My Swaps),
+// plus a real backend sync for logged-in accounts so it travels across
+// browsers/devices too.
 function loadCompareList(){
-  try{ compareList=JSON.parse(sessionStorage.getItem(COMPARE_LIST_KEY)||'[]'); }catch(e){ compareList=[]; }
+  try{ compareList=JSON.parse(localStorage.getItem(COMPARE_LIST_KEY)||'[]'); }catch(e){ compareList=[]; }
 }
-function saveCompareList(){ sessionStorage.setItem(COMPARE_LIST_KEY,JSON.stringify(compareList)); }
+function saveCompareList(){ localStorage.setItem(COMPARE_LIST_KEY,JSON.stringify(compareList)); }
+
+var COMPARE_LIST_URL=BACKEND_BASE_URL+'/compare-list';
+function syncCompareAddToBackend(item){
+  if(!isReallyLoggedIn()) return;
+  fetch(COMPARE_LIST_URL,{method:'POST',headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),body:JSON.stringify({
+    barcode:item.barcode,name:item.name,brand:item.brand,source:item.source,badge_class:item.badgeClass,
+    result:item.result||null,normalized:item.normalized||null,ingredients:item.ingredients||''
+  })}).then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+function syncCompareRemoveToBackend(barcode){
+  if(!isReallyLoggedIn()) return;
+  fetch(COMPARE_LIST_URL+'/'+encodeURIComponent(barcode),{method:'DELETE',headers:getAuthHeaders()})
+    .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+function syncCompareClearToBackend(){
+  if(!isReallyLoggedIn()) return;
+  fetch(COMPARE_LIST_URL,{method:'DELETE',headers:getAuthHeaders()})
+    .then(function(res){ if(!res.ok) handleAuthExpiry(res); }).catch(function(){});
+}
+// Pulls the account's saved compare list down from the backend on login,
+// same merge logic as Favorites/My Swaps: anything only saved locally
+// (offline, or as a guest before this login) gets pushed up first so
+// nothing is silently lost.
+async function fetchCompareListFromBackend(){
+  if(!isReallyLoggedIn()) return;
+  var local=compareList.slice();
+  try{
+    var res=await fetch(COMPARE_LIST_URL,{headers:getAuthHeaders()});
+    if(!res.ok){ handleAuthExpiry(res); return; }
+    var backendList=await res.json();
+    if(!Array.isArray(backendList)) return;
+    var backendBarcodes={};
+    backendList.forEach(function(it){ backendBarcodes[it.barcode]=true; });
+    var localOnly=local.filter(function(it){ return !backendBarcodes[it.barcode]; });
+    // Respect the 4-item cap when merging so a device that was offline with
+    // a full list doesn't silently exceed it once reconnected.
+    var room=Math.max(0,MAX_COMPARE-backendList.length);
+    localOnly=localOnly.slice(0,room);
+    localOnly.forEach(function(it){ syncCompareAddToBackend(it); });
+    compareList=backendList.map(function(it){
+      return{barcode:it.barcode,name:it.name,brand:it.brand,source:it.source,badgeClass:it.badge_class,result:it.result,normalized:it.normalized,ingredients:it.ingredients||''};
+    }).concat(localOnly);
+    saveCompareList();
+    refreshCompareUI();
+    if(typeof renderMultiCompareTable==='function'&&document.getElementById('multiCompareSection')) renderMultiCompareTable();
+  }catch(e){ /* offline/unreachable backend — local compare list remains usable */ }
+}
 
 function isInCompareList(barcode){ return compareList.some(function(p){ return p.barcode===barcode; }); }
 
@@ -2314,10 +2494,12 @@ function addToCompareList(prod){
     alert('You can compare up to '+MAX_COMPARE+' products at once. Remove one first.');
     return;
   }
-  compareList.push(compareSnapshot(prod));
+  var entry=compareSnapshot(prod);
+  compareList.push(entry);
   saveCompareList();
   refreshCompareUI();
   logCompareActivity(prod.barcode);
+  syncCompareAddToBackend(entry);
 }
 
 function addAltToCompareList(alt){
@@ -2327,7 +2509,7 @@ function addAltToCompareList(alt){
     alert('You can compare up to '+MAX_COMPARE+' products at once. Remove one first.');
     return;
   }
-  compareList.push({
+  var entry={
     barcode: alt.barcode,
     name: alt.product_name||'Unknown',
     brand: alt.brand||'',
@@ -2336,22 +2518,26 @@ function addAltToCompareList(alt){
     result: {score:alt.health_score,grade:alt.grade,gradeClass:alt.gradeClass||('score-'+(alt.grade||'c').toLowerCase()),flags:[],ingredientFlags:[]},
     normalized: alt.normalized||{},
     ingredients: ''
-  });
+  };
+  compareList.push(entry);
   saveCompareList();
   refreshCompareUI();
   logCompareActivity(alt.barcode);
+  syncCompareAddToBackend(entry);
 }
 
 function removeFromCompareList(barcode){
   compareList=compareList.filter(function(p){ return p.barcode!==barcode; });
   saveCompareList();
   refreshCompareUI();
+  syncCompareRemoveToBackend(barcode);
 }
 
 function clearCompareList(){
   compareList=[];
   saveCompareList();
   refreshCompareUI();
+  syncCompareClearToBackend();
 }
 
 function refreshCompareUI(){
@@ -3911,7 +4097,7 @@ async function fetchMySwapsFromBackend(){
         originalBarcode:s.original_barcode,originalName:s.original_name,
         altBarcode:s.alt_barcode,altName:s.alt_name,altBrand:s.alt_brand,
         altScore:s.alt_score,altGrade:s.alt_grade,note:s.note||'',
-        addedAt:s.added_at?new Date(s.added_at).getTime():Date.now()
+        addedAt:(parseBackendTimestamp(s.added_at)||new Date()).getTime()
       };
     }).concat(localOnly);
     saveMySwapsList(merged);
@@ -4140,7 +4326,7 @@ async function renderHomeDashboard(){
   if(feed&&Array.isArray(feed.recently_scanned)&&feed.recently_scanned.length){
     recentHTML='<div class="dash-recent-row">'+feed.recently_scanned.slice(0,5).map(function(item){
       var gc=dashScoreClass(item.health_score);
-      var ds=item.scanned_at?new Date(item.scanned_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'';
+      var ds=item.scanned_at?(parseBackendTimestamp(item.scanned_at)||new Date()).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'';
       return '<div class="dash-mini-card" onclick="quickScan(\''+item.barcode+'\')"><div class="dash-mini-score '+gc+'">'+item.grade+'</div><div class="dash-mini-name">'+(item.product_name||'Unknown')+'</div><div class="dash-mini-meta">'+item.health_score+'/10'+(ds?' \u00b7 '+ds:'')+'</div></div>';
     }).join('')+'</div>';
   } else {
@@ -5312,7 +5498,8 @@ calcBadgeProgress(); // check for any already-earned badges silently
 refreshCompareUI();
 maybeShowOnboarding();
 loadAuth();
-if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); fetchMySwapsFromBackend(); fetchShoppingListFromBackend(); syncBadgesFromBackend(); }
+if(currentUser&&currentUser.token&&!currentUser.localOnly){ fetchPreferencesFromBackend(); fetchFavoritesFromBackend(); fetchMySwapsFromBackend(); fetchShoppingListFromBackend(); fetchCompareListFromBackend(); syncBadgesFromBackend(); }
+if(currentUser&&currentUser.localOnly&&currentUser.email){ setTimeout(function(){ retryBackendConnection(true); },1500); }
 renderHomeDashboard();
 renderStreakGoalCard();
 renderQuickStats();
