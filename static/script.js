@@ -546,6 +546,7 @@ function _renderWeeklyPanelCore(stats){
   var days=[];
   for(var i=6;i>=0;i--){
     var d=new Date(weekEnd.getTime()-i*86400000);
+    d.setHours(0,0,0,0);
     days.push({date:d,label:d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}),scans:[],avg:null});
   }
 
@@ -554,17 +555,29 @@ function _renderWeeklyPanelCore(stats){
 
   var totalScansInWindow=0;
   (stats.history||[]).forEach(function(item){
-    var itemDate=new Date(item.timestamp); itemDate.setHours(0,0,0,0);
+    if(!item) return;
+    var itemDate=parseBackendTimestamp(item.timestamp)||(item.timestamp?new Date(item.timestamp):null);
+    if(!itemDate||isNaN(itemDate.getTime())) return;
+    itemDate.setHours(0,0,0,0);
     var itemMs=itemDate.getTime();
+
     if(itemMs>=weekStartMs && itemMs<=weekEndMs){
       totalScansInWindow++;
-      var dayObj=days.find(function(x){ return x.date.getTime()===itemMs; });
-      if(dayObj) dayObj.scans.push(item.score);
+      var scoreVal=typeof item.score==='number'?item.score:(typeof item.health_score==='number'?item.health_score:5);
+      var dayObj=days.find(function(x){
+        return x.date.getFullYear()===itemDate.getFullYear() &&
+               x.date.getMonth()===itemDate.getMonth() &&
+               x.date.getDate()===itemDate.getDate();
+      });
+      if(dayObj && !isNaN(scoreVal)) dayObj.scans.push(scoreVal);
     }
   });
 
   days.forEach(function(d){
-    if(d.scans.length) d.avg=Math.round(d.scans.reduce(function(a,b){return a+b;},0)/d.scans.length*10)/10;
+    var validScans=d.scans.filter(function(s){ return typeof s==='number' && !isNaN(s); });
+    if(validScans.length){
+      d.avg=Math.round(validScans.reduce(function(a,b){return a+b;},0)/validScans.length*10)/10;
+    }
   });
 
   var canGoNext=weeklyOffset<0;
@@ -582,13 +595,13 @@ function _renderWeeklyPanelCore(stats){
   }
 
   var scansThisWeek=totalScansInWindow||stats.total;
-  var avgScores=days.filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
+  var avgScores=days.filter(function(d){return d.avg!==null && !isNaN(d.avg);}).map(function(d){return d.avg;});
   var weekAvg=avgScores.length?Math.round(avgScores.reduce(function(a,b){return a+b;},0)/avgScores.length*10)/10:null;
-  var bestDay=days.reduce(function(best,d){return(d.avg!==null&&(best.avg===null||d.avg>best.avg))?d:best;},{avg:null});
+  var bestDay=days.reduce(function(best,d){return(d.avg!==null&&!isNaN(d.avg)&&(best.avg===null||d.avg>best.avg))?d:best;},{avg:null});
 
   // Trend: compare first half vs second half of week
-  var firstHalf=days.slice(0,3).filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
-  var secondHalf=days.slice(4,7).filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
+  var firstHalf=days.slice(0,3).filter(function(d){return d.avg!==null&&!isNaN(d.avg);}).map(function(d){return d.avg;});
+  var secondHalf=days.slice(4,7).filter(function(d){return d.avg!==null&&!isNaN(d.avg);}).map(function(d){return d.avg;});
   var firstAvg=firstHalf.length?firstHalf.reduce(function(a,b){return a+b;},0)/firstHalf.length:null;
   var secondAvg=secondHalf.length?secondHalf.reduce(function(a,b){return a+b;},0)/secondHalf.length:null;
   var trendHTML='';
@@ -607,13 +620,14 @@ function _renderWeeklyPanelCore(stats){
   var points=[], barsHTML='', labelsHTML='', scoresHTML='';
   days.forEach(function(day,i){
     var x=padL+i*(chartW/7)+(chartW/7)/2;
-    var barH=day.avg!==null?Math.round((day.avg/maxScore)*chartH):0;
+    var validAvg=(day.avg!==null && !isNaN(day.avg))?day.avg:null;
+    var barH=validAvg!==null?Math.round((validAvg/maxScore)*chartH):0;
     var y=padT+chartH-barH;
-    var fillColor=day.avg===null?'none':day.avg>=7?'#C0FF33':day.avg>=5?'#ffd166':'#ff6b6b';
-    if(day.avg!==null){
+    var fillColor=validAvg===null?'none':validAvg>=7?'#C0FF33':validAvg>=5?'#ffd166':'#ff6b6b';
+    if(validAvg!==null){
       barsHTML+='<rect x="'+(x-barW/2)+'" y="'+y+'" width="'+barW+'" height="'+barH+'" rx="4" fill="'+fillColor+'" opacity="0.85"/>';
       points.push({x:x,y:y});
-      scoresHTML+='<text x="'+x+'" y="'+(y-4)+'" text-anchor="middle" font-size="9" fill="var(--text-muted)" font-family="DM Mono, monospace">'+day.avg+'</text>';
+      scoresHTML+='<text x="'+x+'" y="'+(y-4)+'" text-anchor="middle" font-size="9" fill="var(--text-muted)" font-family="DM Mono, monospace">'+validAvg+'</text>';
     }
     labelsHTML+='<text x="'+x+'" y="'+(svgH-6)+'" text-anchor="middle" font-size="9" fill="var(--gray)" font-family="DM Mono, monospace">'+day.label+'</text>';
   });
