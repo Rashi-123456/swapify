@@ -183,7 +183,7 @@ function logoutFromSettings(){
 // totals/streak/badges just because the backend never knew about them.
 // Tracked per-browser so the button doesn't linger forever once used.
 var LOCAL_HISTORY_IMPORTED_KEY='swapify-local-history-imported-v1';
-async function importLocalScanHistory(){
+async function importLocalScanHistory(silent){
   if(!isReallyLoggedIn()) return;
   var btn=document.getElementById('importHistoryBtn');
   if(btn){ btn.disabled=true; btn.textContent='Importing…'; }
@@ -191,6 +191,7 @@ async function importLocalScanHistory(){
     var items=loadHistory().map(function(h){
       return{barcode:h.barcode,product_name:h.name,health_score:h.score,timestamp:h.timestamp};
     });
+    if(!items.length) return;
     var res=await fetch(BACKEND_BASE_URL+'/scan-history/import',{
       method:'POST',
       headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
@@ -205,10 +206,10 @@ async function importLocalScanHistory(){
     if(typeof syncBadgesFromBackend==='function') syncBadgesFromBackend();
     if(typeof renderHomeDashboard==='function') renderHomeDashboard();
     renderSettingsPage();
-    alert('Imported '+data.imported+' scan'+(data.imported===1?'':'s')+(data.skipped?' ('+data.skipped+' already on your account)':'')+'. Your totals, streak, and achievements will update shortly.');
+    if(!silent) alert('Imported '+data.imported+' scan'+(data.imported===1?'':'s')+(data.skipped?' ('+data.skipped+' already on your account)':'')+'. Your totals, streak, and achievements will update shortly.');
   }catch(e){
     if(btn){ btn.disabled=false; btn.textContent='Import →'; }
-    alert('Couldn\u2019t import right now — please try again in a moment.');
+    if(!silent) alert('Couldn\u2019t import right now — please try again in a moment.');
   }
 }
 
@@ -713,6 +714,7 @@ async function performRealLogin(email,pass){
     await fetchShoppingListFromBackend();
     await fetchCompareListFromBackend();
     syncBadgesFromBackend();
+    if(!localStorage.getItem(LOCAL_HISTORY_IMPORTED_KEY)) importLocalScanHistory(true);
     closeAuthModal(); openProfilePanel();
   }catch(networkErr){
     // Backend unreachable — fall back to a local-only pseudo-account so the
