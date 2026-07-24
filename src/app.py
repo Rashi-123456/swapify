@@ -193,6 +193,10 @@ class ReviewReply(BaseModel):
     reply_text: str
 
 
+class DigestPreference(BaseModel):
+    weekly_digest: bool = True
+
+
 # JWT signing key. Overridable via the environment for deployment (set a strong,
 # random SECRET_KEY in production); falls back to the original constant so local
 # dev and the test suite keep working unchanged.
@@ -5823,6 +5827,52 @@ def get_daily_digest(
             "body_text": body,
         },
     }
+
+
+@app.post("/digest/preference")
+def set_digest_preference(
+        pref: DigestPreference,
+        user_id: Optional[int] = Depends(get_current_user_optional),
+):
+    """Save user's weekly digest preference (opt-in / opt-out)."""
+    effective_id = user_id if isinstance(user_id, int) else 1
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_digest_preferences (
+            user_id INTEGER PRIMARY KEY,
+            weekly_digest INTEGER NOT NULL DEFAULT 1,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cur.execute(
+        "INSERT INTO user_digest_preferences (user_id, weekly_digest) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET weekly_digest=excluded.weekly_digest, updated_at=CURRENT_TIMESTAMP",
+        (effective_id, 1 if pref.weekly_digest else 0),
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Digest preference saved", "weekly_digest": pref.weekly_digest}
+
+
+@app.get("/digest/preference")
+def get_digest_preference(
+        user_id: Optional[int] = Depends(get_current_user_optional),
+):
+    """Get user's weekly digest preference."""
+    effective_id = user_id if isinstance(user_id, int) else 1
+    enabled = True
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT weekly_digest FROM user_digest_preferences WHERE user_id = ?", (effective_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            enabled = bool(dict(row)["weekly_digest"])
+    except Exception:
+        pass
+    return {"weekly_digest": enabled}
 
 
 # ==============================================================================

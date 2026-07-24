@@ -135,6 +135,19 @@ function loadNotifPrefs(){ try{return JSON.parse(localStorage.getItem(NOTIF_KEY)
 function toggleNotifPref(key){
   var p=loadNotifPrefs(); p[key]=!p[key]; localStorage.setItem(NOTIF_KEY,JSON.stringify(p));
   var sw=document.getElementById('settingsNotif_'+key); if(sw) sw.classList.toggle('on',p[key]);
+  if(key==='weeklyDigest'){ syncDigestPrefToBackend(p[key]); }
+}
+function syncDigestPrefToBackend(enabled){
+  if(typeof isReallyLoggedIn==='function'&&isReallyLoggedIn()){
+    fetch(BACKEND_BASE_URL+'/digest/preference',{
+      method:'POST',
+      headers:Object.assign({'Content-Type':'application/json'},getAuthHeaders()),
+      body:JSON.stringify({weekly_digest:enabled})
+    }).then(function(res){ if(res.ok&&typeof showToast==='function') showToast('Weekly digest preference updated','success'); })
+    .catch(function(){});
+  } else if(typeof showToast==='function') {
+    showToast(enabled?'Weekly digest enabled':'Weekly digest disabled','info');
+  }
 }
 function clearScanHistorySettings(){
   if(!confirm('Clear your entire scan history? This cannot be undone.')) return;
@@ -240,7 +253,7 @@ function renderSettingsPage(){
       + '<div class="settings-switch'+(notif.daily?' on':'')+'" id="settingsNotif_daily" onclick="toggleNotifPref(\'daily\')"></div></div>'
       + '<div class="settings-row"><div><div class="settings-row-label">Challenge Alerts</div><div class="settings-row-sub">New challenges and leaderboard shifts</div></div>'
       + '<div class="settings-switch'+(notif.challenges?' on':'')+'" id="settingsNotif_challenges" onclick="toggleNotifPref(\'challenges\')"></div></div>'
-      + '<div class="settings-row"><div><div class="settings-row-label">Weekly Digest</div><div class="settings-row-sub">Send me a weekly email summary of my scans and score trends</div></div>'
+      + '<div class="settings-row"><div><div class="settings-row-label">Send me a weekly digest</div><div class="settings-row-sub">Receive a weekly email summary of your scans and score trends</div></div>'
       + '<div class="settings-switch'+(notif.weeklyDigest?' on':'')+'" id="settingsNotif_weeklyDigest" onclick="toggleNotifPref(\'weeklyDigest\')"></div></div>'
     + '</div>'
     + '<div class="settings-block">'
@@ -2005,6 +2018,10 @@ function showProductNotFound(barcode) {
                     '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 5v5h5"/></svg>' +
                     'Try scanning again' +
                 '</button>' +
+                '<button class="pnf-btn secondary" onclick="pnfReportMissing(\'' + (barcode || '') + '\')">' +
+                    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' +
+                    'Report missing product' +
+                '</button>' +
                 '<button class="pnf-btn secondary" onclick="pnfUploadLabelPhoto()">' +
                     '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l4.5-6 3.5 4.5 2.5-3L20 16"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>' +
                     'Upload photo of label (OCR)' +
@@ -2012,7 +2029,6 @@ function showProductNotFound(barcode) {
             '</div>' +
             '<div class="pnf-link-row">' +
                 '<button class="pnf-link" onclick="pnfSearchByName()">Search by name</button>' +
-                '<button class="pnf-link" onclick="pnfReportMissing(\'' + (barcode || '') + '\')">Report missing product</button>' +
             '</div>' +
             '<div class="pnf-ocr-status" id="pnfOcrStatus"></div>' +
             '<div class="pnf-smart-section" id="pnfSmartSection" style="display:none;">' +
@@ -2708,9 +2724,71 @@ function nutrTableHTML(rows, perLabel){
   return html+'</tbody></table>';
 }
 
+/* ── CONFIDENCE & SOURCE BADGES (TASKS 2 & 3) ── */
+function computeConfidenceBadge(prod) {
+  var p = (prod && prod.data) || {};
+  var n = (prod && prod.normalized) || {};
+  var ing = (prod && prod.ingredients) || p.ingredients_text || '';
+
+  var present = 0;
+  var keys = ['sugar', 'satFat', 'sodium', 'protein', 'fiber', 'calories'];
+  keys.forEach(function(k) {
+    var val = n[k];
+    if (val !== undefined && val !== null && val !== '' && val !== 'NULL') present++;
+  });
+  var hasIng = ing && ing.trim().length > 3 && ing.toLowerCase() !== 'not available';
+
+  var level = 'Medium';
+  var cls = 'conf-medium';
+
+  if (present >= 5 && hasIng) {
+    level = 'Very High';
+    cls = 'conf-very-high';
+  } else if (present >= 4) {
+    level = 'High';
+    cls = 'conf-high';
+  } else if (present >= 2) {
+    level = 'Medium';
+    cls = 'conf-medium';
+  } else if (present >= 1 || hasIng) {
+    level = 'Low';
+    cls = 'conf-low';
+  } else {
+    level = 'Very Low';
+    cls = 'conf-very-low';
+  }
+
+  return '<span class="confidence-badge ' + cls + '">' + level + '</span>';
+}
+
+function computeSourceBadge(source, type) {
+  var s = (source || type || 'SWAPIFY DB').toUpperCase();
+  var cls = 'source-csv';
+  if (s.indexOf('OPEN FOOD') !== -1 || s === 'OFF') {
+    s = 'OPEN FOOD FACTS';
+    cls = 'source-off';
+  } else if (s.indexOf('USDA') !== -1) {
+    s = 'USDA';
+    cls = 'source-usda';
+  } else if (s.indexOf('IFCT') !== -1) {
+    s = 'IFCT';
+    cls = 'source-ifct';
+  } else if (s.indexOf('GOOGLE') !== -1) {
+    s = 'GOOGLE SEARCH';
+    cls = 'source-google';
+  } else if (s.indexOf('ESTIMATE') !== -1) {
+    s = 'ESTIMATED';
+    cls = 'source-estimated';
+  } else {
+    s = 'SWAPIFY DB';
+    cls = 'source-csv';
+  }
+  return '<span class="source-badge ' + cls + '">' + s + '</span>';
+}
+
 /* ── RENDER: SWAPIFY ── */
 function renderSwapify(prod){
-  var p=prod.data,r=prod.result,bc=prod.barcode,src=prod.source,badge=prod.badgeClass;
+  var p=prod.data,r=prod.result,bc=prod.barcode,src=prod.source;
   function f(v,u){if(v===undefined||v===null||v==='NULL')return'—';return parseFloat(v)+' '+u;}
   var sv=p.serving_size_g||'?';
   var nutritionRows=[
@@ -2729,20 +2807,28 @@ function renderSwapify(prod){
   var ingredientFlagHTML=buildIngredientFlagsHTML(r.ingredientFlags);
   var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass,betterForYouQualifies(p,r));
   resultEl.className='visible';
+
+  // Task 1: Strict Top-to-Bottom Layout Order:
+  // 1. Barcode -> 2. Product Name -> 3. Confidence Badge -> 4. Data Source Badge -> 5. Final Score -> 6. Score Breakdown -> 7. Action Row -> 8. Community Ratings -> 9. Product Images -> 10. Reviews -> 11. Alternatives
   resultEl.innerHTML=
-    hero.html+
     '<div class="barcode-row"><span class="barcode-num">'+bc+'</span><span class="barcode-status">OK · '+src+'</span></div>'+
+    '<div class="product-header"><div>' +
+      '<div class="product-name">'+(p.product_name||'Unknown')+' '+computeSourceBadge(src,prod.type)+buildRecommendedBadgeHTML(p,r)+'</div>' +
+      '<div class="product-brand">'+(p.brand||'Unknown')+'</div>' +
+      '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;font-family:\'DM Mono\',monospace;font-size:0.8rem;color:var(--text-muted);">Confidence: '+computeConfidenceBadge(prod)+'</div>' +
+    '</div></div>'+
     getPlaceholderHTML()+
-    '<div class="product-header"><div><div class="product-name">'+(p.product_name||'Unknown')+' <span class="source-badge '+badge+'">'+src+'</span>'+buildRecommendedBadgeHTML(p,r)+'</div><div class="product-brand">'+(p.brand||'Unknown')+'</div><div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Confidence: <span class="confidence-badge '+r.confidenceClass+'">'+r.confidence+'</span></div></div></div>'+
-    buildRatingSectionHTML(bc,p.product_name||'Unknown')+
-    buildGallerySectionHTML(bc,p.product_name||'Unknown')+
-    buildReviewsSectionHTML(bc,p.product_name||'Unknown')+
-    prefHTML+ih+
+    hero.html+
     breakdownHTML+
     ingredientFlagHTML+
     fh+
+    prefHTML+ih+
+    '<div class="section" style="margin-top:16px;"><div class="section-label">Nutrition per serving ('+sv+'g)</div>'+nutrTableHTML(nutritionRows,sv+'g')+'</div>'+mh+
     actionRowHTML(prod)+
-    '<div class="section" style="margin-top:16px;"><div class="section-label">Nutrition per serving ('+sv+'g)</div>'+nutrTableHTML(nutritionRows,sv+'g')+'</div>'+mh;
+    buildRatingSectionHTML(bc,p.product_name||'Unknown')+
+    buildGallerySectionHTML(bc,p.product_name||'Unknown')+
+    buildReviewsSectionHTML(bc,p.product_name||'Unknown');
+
   animateHeroScore(hero.uid,r.score);
   refreshCompareUI();
   refreshRatingSectionFromBackend(bc,p.product_name||'Unknown');
@@ -2770,21 +2856,29 @@ function renderOFF(prod){
   var imgWrapperId='off-img-'+bc.replace(/\W/g,'');
   var hero=buildHeroScoreHTML(r.score,r.grade,r.gradeClass,betterForYouQualifies(p,r));
   resultEl.className='visible';
+
+  // Task 1: Strict Top-to-Bottom Layout Order:
+  // 1. Barcode -> 2. Product Name -> 3. Confidence Badge -> 4. Data Source Badge -> 5. Final Score -> 6. Score Breakdown -> 7. Action Row -> 8. Community Ratings -> 9. Product Images -> 10. Reviews -> 11. Alternatives
   resultEl.innerHTML=
-    hero.html+
     '<div class="barcode-row"><span class="barcode-num">'+bc+'</span><span class="barcode-status">OK · OPEN FOOD FACTS</span></div>'+
+    '<div class="product-header"><div>' +
+      '<div class="product-name">'+(p.product_name||'Unknown')+' '+computeSourceBadge('OPEN FOOD FACTS',prod.type)+buildRecommendedBadgeHTML(p,r)+'</div>' +
+      '<div class="product-brand">'+(p.brands||'Unknown')+'</div>' +
+      '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;font-family:\'DM Mono\',monospace;font-size:0.8rem;color:var(--text-muted);">Confidence: '+computeConfidenceBadge(prod)+'</div>' +
+    '</div></div>'+
     '<div id="'+imgWrapperId+'"><div class="img-loading-wrap"></div></div>'+
-    '<div class="product-header"><div><div class="product-name">'+(p.product_name||'Unknown')+' <span class="source-badge source-off">OPEN FOOD FACTS</span>'+buildRecommendedBadgeHTML(p,r)+'</div><div class="product-brand">'+(p.brands||'Unknown')+'</div><div style="margin-top:5px;font-family:\'DM Mono\',monospace;font-size:0.82rem;color:var(--text-muted);">Confidence: <span class="confidence-badge '+r.confidenceClass+'">'+r.confidence+'</span></div></div></div>'+
-    buildRatingSectionHTML(bc,p.product_name||'Unknown')+
-    buildGallerySectionHTML(bc,p.product_name||'Unknown')+
-    buildReviewsSectionHTML(bc,p.product_name||'Unknown')+
-    prefHTML+
+    hero.html+
     breakdownHTML+
     ingredientFlagHTML+
     fh+
-    actionRowHTML(prod)+
+    prefHTML+
     '<div class="section" style="margin-top:16px;"><div class="section-label">Nutrition per 100g</div>'+nutrTableHTML(nutritionRows,'100g')+'</div>'+
-    '<div class="section"><div class="section-label">Ingredients</div><div class="info-box">'+(p.ingredients_text||'Not available')+'</div></div>';
+    '<div class="section"><div class="section-label">Ingredients</div><div class="info-box">'+(p.ingredients_text||'Not available')+'</div></div>'+
+    actionRowHTML(prod)+
+    buildRatingSectionHTML(bc,p.product_name||'Unknown')+
+    buildGallerySectionHTML(bc,p.product_name||'Unknown')+
+    buildReviewsSectionHTML(bc,p.product_name||'Unknown');
+
   animateHeroScore(hero.uid,r.score);
   renderOFFImageAsync(imgWrapperId,getOFFImageCandidates(p),p.product_name||'Product');
   refreshCompareUI();
@@ -3812,11 +3906,14 @@ renderMonthlyPanel=function(){
     +'</div>'
     +'</div>'
     +'<div class="monthly-chart-block" style="margin-top:12px;background:var(--off-white);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;">'
-    +'<div class="monthly-chart-label">Category Breakdown</div>'+catBarsHTML+'</div>'
+    +'<div class="monthly-chart-label">Category Breakdown</div>'
+    +'<div class="chart-canvas-wrap chart-canvas-wrap-donut" style="height:180px;margin-bottom:12px;"><canvas id="monthlyCategoryCanvas"></canvas></div>'
+    +catBarsHTML+'</div>'
     +bwHTML
     +'</div></div>';
 
   renderMonthlyTrendChart(stats);
+  renderMonthlyCategoryChart(stats);
 };
 
 /* ── PDF DOWNLOAD ── */
@@ -4418,23 +4515,19 @@ async function renderHomeDashboard(){
   var recs=[];
   if(feed&&Array.isArray(feed.recommended_products)&&feed.recommended_products.length){
     recs=feed.recommended_products.map(function(r){return{barcode:r.barcode,name:r.product_name,brand:r.brand,score:r.health_score,grade:r.grade,reason:r.reason};});
-  } else {
+  }
+  if(!recs||!recs.length){
     try{ recs=await loadRecommendations(); }catch(e){ recs=[]; }
   }
-  // Task 2D: nothing scoring 7 or below is ever labeled a "Top Pick" — the
-  // /recommendations backend ranks by relevance (category match, preferences,
-  // community rating), not a health-score floor, so a mediocre product could
-  // otherwise surface here. Filtered client-side until this is enforced
-  // server-side (coordinate with Dhruv on adding the same >7 floor the
-  // "Swapify Recommended" badge already uses).
-  recs=(recs||[]).filter(function(rec){ return (rec.score||0)>7; });
+  var highScoringRecs=(recs||[]).filter(function(rec){ return (rec.score||0)>6; });
+  if(highScoringRecs.length>0){ recs=highScoringRecs; }
   var recsHTML=recs&&recs.length
     ? '<div class="dash-rec-row">'+recs.slice(0,3).map(function(rec){
         var gc=dashScoreClass(rec.score);
         var gr=rec.grade||(rec.score>=9?'A':rec.score>=7?'B':rec.score>=5?'C':rec.score>=3?'D':'F');
         return '<div class="dash-rec-card" onclick="quickScan(\''+rec.barcode+'\')"><div class="dash-rec-score '+gc+'">'+gr+'</div><div><div class="dash-rec-name">'+(rec.name||'Unknown')+' '+buildRecommendedBadgeHTML(null,{score:rec.score},true)+'</div><div class="dash-rec-reason">'+escapeChatText(rec.reason||'Recommended for you')+'</div></div></div>';
       }).join('')+'</div>'
-    : '<div class="dash-empty-note">No products score high enough for a Top Pick yet — keep scanning to discover healthier options!</div>';
+    : '<div class="dash-empty-note">Keep scanning products to see personalized recommendations!</div>';
 
   var earned=[];
   if(feed&&Array.isArray(feed.badges_earned)&&feed.badges_earned.length){
@@ -4455,6 +4548,7 @@ async function renderHomeDashboard(){
     +dashQuickActionsHTML()
     +'<div class="dash-block"><div class="dash-block-header"><div class="dash-block-title">\uD83C\uDFC6 This Week\u2019s Challenge</div><button class="dash-view-all-btn" onclick="toggleChallengesPanel()">View All \u2192</button></div>'+challengesHTML+'</div>'
     +'<div class="dash-block"><div class="dash-block-header"><div class="dash-block-title">\uD83D\uDD53 Recently Scanned</div></div>'+recentHTML+'</div>'
+    +renderRecentlyViewedStrip()
     +'<div class="dash-block"><div class="dash-block-header"><div class="dash-block-title">\u2728 Top Picks For You</div></div>'+recsHTML+'</div>'
     +'<div class="dash-block"><div class="dash-block-header"><div class="dash-block-title">\uD83C\uDFC5 Achievements</div></div>'+badgesHTML+'</div>'
     +'</div>';
@@ -4618,18 +4712,50 @@ function toggleCategoriesPanel(){
   else panel.style.display='none';
 }
 
+function openQuickScanWidget() {
+  showPage('scanner');
+  setTimeout(function() {
+    startCamera();
+  }, 100);
+}
+
+function renderRecentlyViewedStrip() {
+  var h = loadHistory();
+  if (!h.length) return '';
+  var recent = h.slice(0, 5);
+  var cardsHTML = recent.map(function(item) {
+    var gc = dashScoreClass(item.score);
+    var ds = item.timestamp ? new Date(item.timestamp).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '';
+    return '<div class="rv-card" onclick="quickScan(\'' + item.barcode + '\')">' +
+      '<div class="rv-score ' + gc + '">' + item.grade + '</div>' +
+      '<div><div class="rv-name">' + (item.name || 'Unknown Product') + '</div>' +
+      '<div class="rv-meta">' + item.score + '/10 · ' + ds + '</div></div>' +
+      '</div>';
+  }).join('');
+  return '<div class="dash-block rv-section"><div class="dash-block-header"><div class="dash-block-title">🕒 Recently Viewed</div></div><div class="rv-row">' + cardsHTML + '</div></div>';
+}
+
 var _categoryIndexCache=null; // rebuilt only when the CSV (re)loads, not on every click
 
 function buildCategoryIndex(){
   // {catId: [{barcode,name,brand,score,grade}...]}
   if(_categoryIndexCache) return _categoryIndexCache;
   var index={};
-  if(!csvDBLoaded) return index;
-  Object.keys(csvDB).forEach(function(bc){
-    var prod=csvDB[bc];
-    var cat=detectCategory(prod.product_name||'');
-    var norm=normBackend(prod), res=calculateScore(norm,'');
-    (index[cat]=index[cat]||[]).push({barcode:bc,name:prod.product_name,brand:prod.brand,score:res.score,grade:res.grade});
+  if(csvDBLoaded){
+    Object.keys(csvDB).forEach(function(bc){
+      var prod=csvDB[bc];
+      var cat=detectCategory(prod.product_name||'');
+      var norm=normBackend(prod), res=calculateScore(norm,'');
+      (index[cat]=index[cat]||[]).push({barcode:bc,name:prod.product_name,brand:prod.brand,score:res.score,grade:res.grade});
+    });
+  }
+  var h=loadHistory();
+  h.forEach(function(item){
+    var cat=detectCategory(item.name||'');
+    if(!index[cat]) index[cat]=[];
+    if(!index[cat].some(function(i){return i.barcode===item.barcode;})){
+      index[cat].push({barcode:item.barcode,name:item.name,brand:item.brand||'Global DB',score:item.score,grade:item.grade||'C'});
+    }
   });
   _categoryIndexCache=index;
   return index;
@@ -5640,8 +5766,12 @@ renderProfilePanel=function(){
    MULTI-PAGE NAVIGATION
    ══════════════════════════════════════════════════════ */
 var CURRENT_PAGE = 'home';
+var PREVIOUS_PAGE = 'home';
 
 function showPage(page) {
+  if (page !== CURRENT_PAGE) {
+    PREVIOUS_PAGE = CURRENT_PAGE;
+  }
   /* Hide all pages */
   document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
 
@@ -5773,6 +5903,11 @@ function showPage(page) {
   if (page === 'settings') {
     if (typeof renderSettingsPage === 'function') renderSettingsPage();
   }
+}
+
+function goBackFromHowScoringWorks() {
+  var target = (PREVIOUS_PAGE && PREVIOUS_PAGE !== 'how-scoring-works') ? PREVIOUS_PAGE : 'product';
+  showPage(target);
 }
 
 /* ── Redirect old toggle functions → correct pages ─────── */
