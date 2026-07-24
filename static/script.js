@@ -1208,7 +1208,18 @@ function dismissCameraError(){ hideCameraError(); var inp=document.getElementByI
 var CSV_FILE="swapify_products.csv";
 var csvDB={},csvDBLoaded=false,csvCount=0;
 var csvStatEl=document.getElementById('csvStatus');
-function parseCSVLine(line){ var res=[],cur='',inQ=false; for(var i=0;i<line.length;i++){var c=line[i];if(c==='"'){inQ=!inQ;}else if(c===','&&!inQ){res.push(cur.trim());cur='';}else if(c!=='\r'){cur+=c;}} res.push(cur.trim()); return res; }
+function parseCSVLine(line){
+  var res=[],cur='',inQ=false;
+  var delim = line.indexOf('\t') !== -1 ? '\t' : ',';
+  for(var i=0;i<line.length;i++){
+    var c=line[i];
+    if(c==='"'){inQ=!inQ;}
+    else if(c===delim && !inQ){res.push(cur.trim());cur='';}
+    else if(c!=='\r'){cur+=c;}
+  }
+  res.push(cur.trim());
+  return res;
+}
 function csvVal(v){ if(!v||v===''||v.toUpperCase()==='NULL'||v==='--') return null; var n=parseFloat(v.replace(/\s*(g|mg|kcal|cal)\s*$/i,'').trim()); return isNaN(n)?null:n; }
 function csvStr(v){ return(!v||v==='')?'Unknown':v.trim(); }
 (async function loadCSV(){
@@ -1226,8 +1237,8 @@ function csvStr(v){ return(!v||v==='')?'Unknown':v.trim(); }
     var skipped=0;
     for(var i=1;i<lines.length;i++){
       var line=lines[i].trim(); if(!line) continue;
-      var cols=parseCSVLine(line); if(cols.length<6){skipped++;continue;}
-      var barcode=String(cols[COL.barcode]||'').trim(); if(!barcode||barcode.length<3){skipped++;continue;}
+      var cols=parseCSVLine(line); if(cols.length<4){skipped++;continue;}
+      var barcode=String(cols[COL.barcode]||'').replace(/\s+/g,'').trim(); if(!barcode||barcode.length<3){skipped++;continue;}
       csvDB[barcode]={barcode:barcode,product_name:csvStr(cols[COL.name]),brand:csvStr(cols[COL.brand]),serving_size_g:csvVal(cols[COL.serving]),sugar_g_per_serving:csvVal(cols[COL.sugar]),saturated_fat_g_per_serving:csvVal(cols[COL.satfat]),sodium_mg_per_serving:csvVal(cols[COL.sodium]),protein_g_per_serving:csvVal(cols[COL.protein]),fiber_g_per_serving:csvVal(cols[COL.fiber]),calories_kcal_per_serving:csvVal(cols[COL.cal])};
       csvCount++;
     }
@@ -2313,11 +2324,11 @@ var HERO_DIAL_R = 70;
 var HERO_DIAL_CIRCUMFERENCE = 2 * Math.PI * HERO_DIAL_R;
 
 var HERO_GRADE_COLORS = {
-  A: { light: '#2ECC71', dark: '#3ddc82', bgLight: '#E8F9EE', bgDark: '#0e2a18' },
-  B: { light: '#7cb342', dark: '#96d15c', bgLight: '#F1F8E4', bgDark: '#1a2a0e' },
-  C: { light: '#e0a300', dark: '#ffd166', bgLight: '#FFF7E0', bgDark: '#2a2000' },
-  D: { light: '#e0562e', dark: '#ff8a5c', bgLight: '#FDEEE7', bgDark: '#2a1408' },
-  F: { light: '#F4432E', dark: '#ff5a4a', bgLight: '#FDE9E7', bgDark: '#300a08' }
+  A: { light: '#1b8a47', dark: '#3ddc82', bgLight: '#E8F9EE', bgDark: '#0e2a18' },
+  B: { light: '#5d9e19', dark: '#96d15c', bgLight: '#F1F8E4', bgDark: '#1a2a0e' },
+  C: { light: '#b87c00', dark: '#ffd166', bgLight: '#FFF7E0', bgDark: '#2a2000' },
+  D: { light: '#c8441b', dark: '#ff8a5c', bgLight: '#FDEEE7', bgDark: '#2a1408' },
+  F: { light: '#b82516', dark: '#ff5a4a', bgLight: '#FDE9E7', bgDark: '#300a08' }
 };
 
 function buildHeroScoreHTML(score, grade, gradeClass, qualifiesBetterForYou) {
@@ -2761,22 +2772,26 @@ function computeConfidenceBadge(prod) {
   return '<span class="confidence-badge ' + cls + '">' + level + '</span>';
 }
 
-function computeSourceBadge(source, type) {
-  var s = (source || type || 'SWAPIFY DB').toUpperCase();
+function computeSourceBadge(source, type, data) {
+  var raw = (data && (data.source || data.data_source)) || source || type || 'SWAPIFY DB';
+  raw = String(raw).toUpperCase();
+
+  var s = 'SWAPIFY DB';
   var cls = 'source-csv';
-  if (s.indexOf('OPEN FOOD') !== -1 || s === 'OFF') {
+
+  if (raw.indexOf('OPEN') !== -1 || raw.indexOf('OFF') !== -1 || type === 'off') {
     s = 'OPEN FOOD FACTS';
     cls = 'source-off';
-  } else if (s.indexOf('USDA') !== -1) {
+  } else if (raw.indexOf('USDA') !== -1) {
     s = 'USDA';
     cls = 'source-usda';
-  } else if (s.indexOf('IFCT') !== -1) {
+  } else if (raw.indexOf('IFCT') !== -1) {
     s = 'IFCT';
     cls = 'source-ifct';
-  } else if (s.indexOf('GOOGLE') !== -1) {
+  } else if (raw.indexOf('GOOGLE') !== -1) {
     s = 'GOOGLE SEARCH';
     cls = 'source-google';
-  } else if (s.indexOf('ESTIMATE') !== -1) {
+  } else if (raw.indexOf('ESTIMAT') !== -1) {
     s = 'ESTIMATED';
     cls = 'source-estimated';
   } else {
@@ -2813,7 +2828,7 @@ function renderSwapify(prod){
   resultEl.innerHTML=
     '<div class="barcode-row"><span class="barcode-num">'+bc+'</span><span class="barcode-status">OK · '+src+'</span></div>'+
     '<div class="product-header"><div>' +
-      '<div class="product-name">'+(p.product_name||'Unknown')+' '+computeSourceBadge(src,prod.type)+buildRecommendedBadgeHTML(p,r)+'</div>' +
+      '<div class="product-name">'+(p.product_name||'Unknown')+' '+computeSourceBadge(src,prod.type,p)+buildRecommendedBadgeHTML(p,r)+'</div>' +
       '<div class="product-brand">'+(p.brand||'Unknown')+'</div>' +
       '<div style="margin-top:6px;display:flex;gap:8px;align-items:center;font-family:\'DM Mono\',monospace;font-size:0.8rem;color:var(--text-muted);">Confidence: '+computeConfidenceBadge(prod)+'</div>' +
     '</div></div>'+
@@ -3779,25 +3794,41 @@ async function loadRecommendations(forceRefresh){
   return recs;
 }
 
+function openForYouRecommendationsPage(){
+  showPage('home');
+  recsPanelOpen = true;
+  var panel = document.getElementById('recommendationsPanel');
+  if(panel){
+    renderRecsPanel(false, 10);
+    panel.style.display = '';
+    setTimeout(function(){
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  }
+}
+
 function toggleRecsPanel(){
   recsPanelOpen=!recsPanelOpen;
   var panel=document.getElementById('recommendationsPanel');
-  if(recsPanelOpen){ renderRecsPanel(); panel.style.display=''; }
+  if(recsPanelOpen){ renderRecsPanel(false, 10); panel.style.display=''; }
   else panel.style.display='none';
 }
 
-async function renderRecsPanel(forceRefresh){
+async function renderRecsPanel(forceRefresh, limit){
   var panel=document.getElementById('recommendationsPanel');
-  panel.innerHTML='<div class="rec-section"><div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> AI Recommendations</div><span class="rec-ai-badge">AI ✦</span></div>'+skeletonRows(3)+'</div>';
+  if(!panel) return;
+  var maxCount = limit || 10;
+  panel.innerHTML='<div class="rec-section"><div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> Top 10 Recommended For You</div><span class="rec-ai-badge">AI ✦</span></div>'+skeletonRows(3)+'</div>';
   try{
     var recs=await loadRecommendations(forceRefresh);
     var h=loadHistory();
     if(!recs||!recs.length){
-      panel.innerHTML='<div class="rec-section"><div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> AI Recommendations</div><span class="rec-ai-badge">AI ✦</span><button class="rec-refresh-btn" onclick="renderRecsPanel(true)">↻ Refresh</button></div><div class="rec-empty">Scan more products to unlock personalised recommendations!</div></div>';
+      panel.innerHTML='<div class="rec-section"><div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> Top Recommended For You</div><span class="rec-ai-badge">AI ✦</span><button class="rec-refresh-btn" onclick="renderRecsPanel(true,10)">↻ Refresh</button></div><div class="rec-empty">Scan more products to unlock personalised recommendations!</div></div>';
       return;
     }
-    var contextNote=h.length?'Based on your '+h.length+' scan'+(h.length>1?'s':'')+(activePrefsArray().length?' & preferences':''):'Curated picks for you';
-    var cardsHTML=recs.map(function(rec){
+    var displayRecs = recs.slice(0, maxCount);
+    var contextNote=h.length?'Based on your '+h.length+' scan'+(h.length>1?'s':'')+(activePrefsArray().length?' & preferences':''):'Top curated recommendations for your health profile';
+    var cardsHTML=displayRecs.map(function(rec){
       var gc=rec.score>=9?'score-a':rec.score>=7?'score-b':rec.score>=5?'score-c':rec.score>=3?'score-d':'score-f';
       var gr=rec.grade||(rec.score>=9?'A':rec.score>=7?'B':rec.score>=5?'C':rec.score>=3?'D':'F');
       return '<div class="rec-card">'
@@ -3812,13 +3843,84 @@ async function renderRecsPanel(forceRefresh){
         +'</div></div>';
     }).join('');
     panel.innerHTML='<div class="rec-section">'
-      +'<div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> AI Recommendations</div><span class="rec-ai-badge">AI ✦</span><button class="rec-refresh-btn" onclick="renderRecsPanel(true)">↻ Refresh</button></div>'
+      +'<div class="rec-header-row"><div class="rec-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> Top 10 Recommended For You</div><span class="rec-ai-badge">AI ✦</span><button class="rec-refresh-btn" onclick="renderRecsPanel(true,10)">↻ Refresh</button></div>'
       +'<div style="font-family:\'DM Mono\',monospace;font-size:0.68rem;color:var(--text-muted);margin-bottom:10px;">'+contextNote+'</div>'
       +'<div class="rec-grid">'+cardsHTML+'</div>'
       +'</div>';
   }catch(e){
     panel.innerHTML='<div class="rec-section"><div class="rec-empty">Could not load recommendations.</div></div>';
   }
+}
+
+/* ══════════════════════════════════════════════════════
+   WEEKLY HEALTH REPORT (BUG 2 FIX — WEEK NAV & ACCURATE COUNTS)
+   ══════════════════════════════════════════════════════ */
+var weeklyOffset = 0; // 0 = current week, -1 = last week, etc.
+
+function weekBounds(offset) {
+  var now = new Date();
+  var day = now.getDay();
+  var diffToMonday = (day === 0 ? -6 : 1 - day); // Monday as start of week
+  var monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMonday + ((offset || 0) * 7), 0, 0, 0, 0);
+  var sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6, 23, 59, 59, 999);
+  return { first: monday, last: sunday };
+}
+
+function navWeekly(delta) {
+  weeklyOffset += delta;
+  if (weeklyOffset > 0) weeklyOffset = 0; // can't navigate to future weeks
+  renderWeeklyPanel();
+  var wpSrc = document.getElementById('weeklyPanel');
+  var wpDst = document.getElementById('weeklyPanelPage');
+  if (wpSrc && wpDst) wpDst.innerHTML = wpSrc.innerHTML;
+}
+
+function weekLabel(offset) {
+  var b = weekBounds(offset);
+  return b.first.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + ' – ' + b.last.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+}
+
+function calcWeeklyStats(offset) {
+  var bounds = weekBounds(offset || 0);
+  var h = loadHistory().filter(function(item) {
+    var t = new Date(item.timestamp).getTime();
+    return t >= bounds.first.getTime() && t <= bounds.last.getTime();
+  });
+  var total = h.length;
+  var avg = total ? Math.round(h.reduce(function(s, i) { return s + i.score; }, 0) / total * 10) / 10 : null;
+  return { bounds: bounds, total: total, avg: avg, history: h };
+}
+
+function renderWeeklyPanel() {
+  var stats = calcWeeklyStats(weeklyOffset);
+  var panel = document.getElementById('weeklyPanel');
+  if (!panel) return;
+
+  var canGoNext = weeklyOffset < 0;
+  var navHTML = '<div class="monthly-month-nav">' +
+    '<button class="month-nav-btn" onclick="navWeekly(-1)" title="Previous week">‹</button>' +
+    '<span class="monthly-month-label">' + weekLabel(weeklyOffset) + '</span>' +
+    '<button class="month-nav-btn" onclick="navWeekly(1)" ' + (canGoNext ? '' : 'disabled') + ' title="Next week">›</button>' +
+    '</div>';
+
+  if (stats.total === 0) {
+    panel.innerHTML = '<div class="weekly-section">' +
+      '<div class="monthly-header"><div class="monthly-title">📊 Weekly Health Report</div>' + navHTML + '</div>' +
+      '<div class="monthly-empty">No scans recorded for ' + weekLabel(weeklyOffset) + '. Scan products to build your weekly breakdown!</div>' +
+      '</div>';
+    return;
+  }
+
+  var avgClass = stats.avg >= 7 ? 'stat-good' : (stats.avg >= 5 ? 'stat-warn' : 'stat-bad');
+  var kpiHTML = '<div class="monthly-kpi-row">' +
+    '<div class="monthly-kpi-card"><div class="monthly-kpi-icon kpi-blue">📊</div><div><div class="monthly-kpi-num">' + stats.total + '</div><div class="monthly-kpi-lbl">Scans This Week</div></div></div>' +
+    '<div class="monthly-kpi-card"><div class="monthly-kpi-icon kpi-green">⭐</div><div><div class="monthly-kpi-num ' + avgClass + '">' + (stats.avg !== null ? stats.avg : '—') + '</div><div class="monthly-kpi-lbl">Average Score</div></div></div>' +
+    '</div>';
+
+  panel.innerHTML = '<div class="weekly-section">' +
+    '<div class="monthly-header"><div class="monthly-title">📊 Weekly Health Report</div>' + navHTML + '</div>' +
+    kpiHTML +
+    '</div>';
 }
 
 /* ══════════════════════════════════════════════════════
@@ -4009,7 +4111,8 @@ async function downloadMonthlyPDF(){
         doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(rgb.r,rgb.g,rgb.b);
         doc.text(String(item.score)+'/10',M+2,y);
         doc.setFont('helvetica','normal');doc.setTextColor(10,42,102);
-        doc.text((item.name||'Unknown').substring(0,40),M+16,y);
+        var pName = (item.name || item.product_name || 'Product').substring(0,40);
+        doc.text(pName,M+16,y);
         doc.setTextColor(106,122,154);
         doc.text(ds,PAGE_W-M,y,{align:'right'});
         y+=10;
@@ -4024,7 +4127,12 @@ async function downloadMonthlyPDF(){
       doc.setFontSize(12);doc.setFont('helvetica','bold');doc.setTextColor(10,42,102);
       doc.text('Badges Earned',M,y); y+=6;
       doc.setFontSize(9);doc.setFont('helvetica','normal');doc.setTextColor(10,42,102);
-      earned.forEach(function(b){ doc.text(b.icon+' '+b.name+' — '+b.desc,M,y); y+=6; });
+      earned.forEach(function(b){
+        var bName = (b.name || '').replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        var bDesc = (b.desc || '').replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+        doc.text('• ' + (bName || b.name) + (bDesc ? ' — ' + bDesc : ''), M, y);
+        y+=6;
+      });
     }
 
     // ─── Footer ─────────────────────────────────────────

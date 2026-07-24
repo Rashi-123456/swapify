@@ -1500,11 +1500,12 @@ footer{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:0.7
 .source-badge.source-google { background: rgba(255,193,7,0.18); color: #b78103; border: 1px solid rgba(255,193,7,0.35); }
 .source-badge.source-estimated { background: rgba(255,87,34,0.15); color: #ff5722; border: 1px solid rgba(255,87,34,0.3); }
 
-/* ══ QUICK SCAN WIDGET (TASK 5) ══ */
+/* ══ QUICK SCAN WIDGET (TASK 5 & BUG 3 FIX) ══ */
 .quick-scan-fab {
   position: fixed;
   bottom: 80px;
-  right: 18px;
+  left: 18px;
+  right: auto;
   background: linear-gradient(135deg, var(--accent), #158c77);
   color: #ffffff;
   border-radius: 100px;
