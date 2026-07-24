@@ -6409,7 +6409,7 @@ function copyScoreToClipboard(score) {
   };
   Object.keys(btnMap).forEach(function(id){
     var btn = document.getElementById(id);
-    if (btn) btn.onclick = function(){ showPage(btnMap[id]); };
+    if (btn) btn.onclick = function(){ showPage(btnMap[id]); closeMobileNav(); };
   });
 })();
 
