@@ -5005,14 +5005,15 @@ function buildCategoryIndex(){
   if(csvDBLoaded){
     Object.keys(csvDB).forEach(function(bc){
       var prod=csvDB[bc];
-      var cat=detectCategory(prod.product_name||'');
-      var norm=normBackend(prod), res=calculateScore(norm,'');
+      var cat=detectCategory(prod.product_name||prod.name||'');
+      var scoreVal=typeof prod.score==='number'?prod.score:5;
+      var gradeVal=prod.grade||(scoreVal>=7?'B':scoreVal>=5?'C':'D');
       (index[cat]=index[cat]||[]).push({
         barcode:bc,
-        name:prod.product_name,
-        brand:prod.brand,
-        score:res.score,
-        grade:res.grade,
+        name:prod.product_name||prod.name||'Unknown',
+        brand:prod.brand||'Swapify DB',
+        score:scoreVal,
+        grade:gradeVal,
         source:'Swapify DB'
       });
     });
