@@ -3955,7 +3955,7 @@ function renderWeeklyPanel() {
     '<button class="month-nav-btn" onclick="navWeekly(1)" ' + (canGoNext ? '' : 'disabled') + ' title="Next week">›</button>' +
     '</div>';
 
-  if (stats.total === 0) {
+  if (stats.total === 0 && (!stats.history || !stats.history.length)) {
     panel.innerHTML = '<div class="weekly-section">' +
       '<div class="monthly-header"><div class="monthly-title">📊 Weekly Health Report</div>' + navHTML + '</div>' +
       '<div class="monthly-empty">No scans recorded for ' + weekLabel(weeklyOffset) + '. Scan products to build your weekly breakdown!</div>' +
@@ -3963,16 +3963,96 @@ function renderWeeklyPanel() {
     return;
   }
 
-  var avgClass = stats.avg >= 7 ? 'stat-good' : (stats.avg >= 5 ? 'stat-warn' : 'stat-bad');
+  var bounds = weekBounds(weeklyOffset);
+  var days = [];
+  for (var i = 0; i < 7; i++) {
+    var d = new Date(bounds.first.getFullYear(), bounds.first.getMonth(), bounds.first.getDate() + i, 0, 0, 0, 0);
+    days.push({ date: d, label: d.toLocaleDateString('en-IN', { weekday: 'short' }), scans: [], avg: null });
+  }
+
+  (stats.history || []).forEach(function(item) {
+    if (!item) return;
+    var itemDate = parseBackendTimestamp(item.timestamp) || (item.timestamp ? new Date(item.timestamp) : null);
+    if (!itemDate || isNaN(itemDate.getTime())) return;
+    itemDate.setHours(0, 0, 0, 0);
+    var dayObj = days.find(function(x) {
+      return x.date.getFullYear() === itemDate.getFullYear() &&
+             x.date.getMonth() === itemDate.getMonth() &&
+             x.date.getDate() === itemDate.getDate();
+    });
+    var scoreVal = typeof item.score === 'number' ? item.score : (typeof item.health_score === 'number' ? item.health_score : 5);
+    if (dayObj && !isNaN(scoreVal)) dayObj.scans.push(scoreVal);
+  });
+
+  days.forEach(function(d) {
+    var valid = d.scans.filter(function(s) { return typeof s === 'number' && !isNaN(s); });
+    if (valid.length) d.avg = Math.round(valid.reduce(function(a, b) { return a + b; }, 0) / valid.length * 10) / 10;
+  });
+
+  var avgScores = days.filter(function(d) { return d.avg !== null && !isNaN(d.avg); }).map(function(d) { return d.avg; });
+  var weekAvg = avgScores.length ? Math.round(avgScores.reduce(function(a, b) { return a + b; }, 0) / avgScores.length * 10) / 10 : (stats.avg || null);
+  var avgClass = weekAvg >= 7 ? 'stat-good' : (weekAvg >= 5 ? 'stat-warn' : 'stat-bad');
+
   var kpiHTML = '<div class="monthly-kpi-row">' +
     '<div class="monthly-kpi-card"><div class="monthly-kpi-icon kpi-blue">📊</div><div><div class="monthly-kpi-num">' + stats.total + '</div><div class="monthly-kpi-lbl">Scans This Week</div></div></div>' +
-    '<div class="monthly-kpi-card"><div class="monthly-kpi-icon kpi-green">⭐</div><div><div class="monthly-kpi-num ' + avgClass + '">' + (stats.avg !== null ? stats.avg : '—') + '</div><div class="monthly-kpi-lbl">Average Score</div></div></div>' +
+    '<div class="monthly-kpi-card"><div class="monthly-kpi-icon kpi-green">⭐</div><div><div class="monthly-kpi-num ' + avgClass + '">' + (weekAvg !== null ? weekAvg : '—') + '</div><div class="monthly-kpi-lbl">Average Score</div></div></div>' +
     '</div>';
+
+  // SVG Bar Chart Graph
+  var svgW = 580, svgH = 140, padL = 32, padR = 16, padB = 30, padT = 16;
+  var chartW = svgW - padL - padR, chartH = svgH - padB - padT;
+  var barW = Math.floor(chartW / 7) - 6;
+  var maxScore = 10;
+  var points = [], barsHTML = '', labelsHTML = '', scoresHTML = '';
+
+  days.forEach(function(day, i) {
+    var x = padL + i * (chartW / 7) + (chartW / 7) / 2;
+    var validAvg = (day.avg !== null && !isNaN(day.avg)) ? day.avg : null;
+    var barH = validAvg !== null ? Math.round((validAvg / maxScore) * chartH) : 0;
+    var y = padT + chartH - barH;
+    var fillColor = validAvg === null ? 'none' : validAvg >= 7 ? '#C0FF33' : validAvg >= 5 ? '#ffd166' : '#ff6b6b';
+    if (validAvg !== null) {
+      barsHTML += '<rect x="' + (x - barW / 2) + '" y="' + y + '" width="' + barW + '" height="' + barH + '" rx="4" fill="' + fillColor + '" opacity="0.85"/>';
+      points.push({ x: x, y: y });
+      scoresHTML += '<text x="' + x + '" y="' + (y - 4) + '" text-anchor="middle" font-size="9" fill="var(--text-muted)" font-family="DM Mono, monospace">' + validAvg + '</text>';
+    }
+    labelsHTML += '<text x="' + x + '" y="' + (svgH - 6) + '" text-anchor="middle" font-size="9" fill="var(--gray)" font-family="DM Mono, monospace">' + day.label + '</text>';
+  });
+
+  var lineHTML = '';
+  if (points.length >= 2) {
+    var pathD = 'M ' + points[0].x + ' ' + points[0].y;
+    for (var p = 1; p < points.length; p++) {
+      var cx = (points[p - 1].x + points[p].x) / 2;
+      pathD += ' C ' + cx + ' ' + points[p - 1].y + ' ' + cx + ' ' + points[p].y + ' ' + points[p].x + ' ' + points[p].y;
+    }
+    lineHTML = '<path d="' + pathD + '" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 2" opacity="0.6"/>';
+    points.forEach(function(pt) {
+      lineHTML += '<circle cx="' + pt.x + '" cy="' + pt.y + '" r="4" fill="var(--accent)" opacity="0.8"/>';
+    });
+  }
+
+  var gridHTML = '';
+  [2, 4, 6, 8, 10].forEach(function(v) {
+    var gy = padT + chartH - (v / maxScore) * chartH;
+    gridHTML += '<line x1="' + padL + '" y1="' + gy + '" x2="' + (svgW - padR) + '" y2="' + gy + '" stroke="var(--border)" stroke-width="1" opacity="0.5"/>';
+    gridHTML += '<text x="' + (padL - 4) + '" y="' + (gy + 3) + '" text-anchor="end" font-size="8" fill="var(--gray)" font-family="DM Mono, monospace">' + v + '</text>';
+  });
+
+  var chartHTML = '<div class="chart-label" style="margin-top:14px;margin-bottom:8px;">HEALTH SCORE BY DAY</div>' +
+    '<div class="flowchart-wrap">' +
+    '<svg class="flowchart-svg" viewBox="0 0 ' + svgW + ' ' + svgH + '" xmlns="http://www.w3.org/2000/svg">' +
+    gridHTML + barsHTML + lineHTML + scoresHTML + labelsHTML +
+    '</svg></div>';
 
   panel.innerHTML = '<div class="weekly-section">' +
     '<div class="monthly-header"><div class="monthly-title">📊 Weekly Health Report</div>' + navHTML + '</div>' +
     kpiHTML +
+    chartHTML +
     '</div>';
+
+  var wpSrc = document.getElementById('weeklyPanel'), wpDst = document.getElementById('weeklyPanelPage');
+  if (wpSrc && wpDst && wpSrc !== wpDst) wpDst.innerHTML = wpSrc.innerHTML;
 }
 
 /* ══════════════════════════════════════════════════════
