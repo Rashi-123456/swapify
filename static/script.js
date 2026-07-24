@@ -5147,7 +5147,7 @@ function filterCategoryProducts(query){
 }
 
 function renderCategoryDetailView(catId){
-  var meta=CATEGORY_META[catId]||{label:catId,icon:'\uD83D\uDCE6'};
+  var meta=CATEGORY_META[catId]||{label:catId.replace(/_/g,' ').replace(/\b\w/g,function(l){return l.toUpperCase();}),icon:'📦'};
   var index=buildCategoryIndex();
   var items=(index[catId]||[]).slice().sort(function(a,b){return b.score-a.score;});
 
@@ -5162,7 +5162,7 @@ function renderCategoryDetailView(catId){
   var listHTML=items.length
     ? items.map(function(item,i){
         var gc=item.score>=9?'score-a':item.score>=7?'score-b':item.score>=5?'score-c':item.score>=3?'score-d':'score-f';
-        var catBadgeHTML=buildBetterForYouBadgeHTML(item.score>7,'better-for-you-badge-list');
+        var catBadgeHTML=(item.score>=7)?'<span class="better-for-you-badge better-for-you-badge-list" title="Better For You">Better For You</span>':'';
         var srcBadge=item.source?'<span class="source-badge" style="font-size:0.65rem;padding:2px 6px;margin-left:6px;">'+item.source+'</span>':'';
         return '<div class="cat-product-item" onclick="quickScan(\''+item.barcode+'\')">'
           +'<div class="cat-product-rank">#'+(i+1)+'</div>'
