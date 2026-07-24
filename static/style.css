@@ -25,6 +25,10 @@ button{background:none;border:none;cursor:pointer;}
 button:disabled{cursor:not-allowed;opacity:0.6;}
 h1,h2,h3,h4,.logo,.card-title,.product-name,.alt-title,.compare-title,.pref-section-title{font-family:'Sora',sans-serif;}
 
+/* ── MULTI-PAGE SYSTEM ── */
+.page{display:none;}
+.page.active{display:block;animation:fadeUp 0.25s ease;}
+
 /* ── HEADER ── */
 header{background:var(--navy-deep);padding:0 28px;height:64px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 20px rgba(0,0,0,0.25);gap:12px;}
 .logo{font-size:1.5rem;font-weight:900;color:#fff;letter-spacing:-1px;flex-shrink:0;cursor:pointer;}
