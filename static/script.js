@@ -1283,7 +1283,7 @@ function csvStr(v){ return(!v||v==='')?'Unknown':v.trim(); }
     if(csvCount===0){csvStatEl.className='db-status db-error';csvStatEl.innerHTML='✗ 0 products loaded.';return;}
     csvDBLoaded=true;
     _categoryIndexCache=null;
-    if(categoriesPanelOpen && typeof renderCategoriesPanel==='function') renderCategoriesPanel();
+    if((categoriesPanelOpen || CURRENT_PAGE==='categories') && typeof renderCategoriesPanel==='function') renderCategoriesPanel();
     if(csvCount<50){csvStatEl.className='db-status db-warn';csvStatEl.innerHTML='⚠ Only <strong>'+csvCount+' products</strong> loaded'+(skipped>0?' ('+skipped+' rows skipped)':'');}
     else{csvStatEl.className='db-status db-loaded';csvStatEl.textContent='✓ Product DB: '+csvCount+' products loaded';}
   }catch(e){csvStatEl.className='db-status db-error';csvStatEl.innerHTML='✗ CSV not found. Place <code>'+CSV_FILE+'</code> in same folder.';}
@@ -4990,7 +4990,7 @@ async function fetchBackendProductsForCategories(){
       if(Array.isArray(data)){
         _backendProductsCache=data;
         _categoryIndexCache=null; // rebuild index with backend products
-        if(categoriesPanelOpen && typeof renderCategoriesPanel==='function'){
+        if((categoriesPanelOpen || CURRENT_PAGE==='categories') && typeof renderCategoriesPanel==='function'){
           renderCategoriesPanel();
         }
       }
@@ -4998,6 +4998,7 @@ async function fetchBackendProductsForCategories(){
   }catch(e){ /* offline/unreachable */ }
   _backendProductsFetchInFlight=false;
 }
+fetchBackendProductsForCategories();
 
 function buildCategoryIndex(){
   if(_categoryIndexCache && Object.keys(_categoryIndexCache).length > 0) return _categoryIndexCache;
