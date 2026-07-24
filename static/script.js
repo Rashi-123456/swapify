@@ -4975,28 +4975,89 @@ function renderRecentlyViewedStrip() {
   return '<div class="dash-block rv-section"><div class="dash-block-header"><div class="dash-block-title">🕒 Recently Viewed</div></div><div class="rv-row">' + cardsHTML + '</div></div>';
 }
 
-var _categoryIndexCache=null; // rebuilt only when the CSV (re)loads, not on every click
+var _backendProductsCache=null;
+var _backendProductsFetchInFlight=false;
+
+async function fetchBackendProductsForCategories(){
+  if(_backendProductsFetchInFlight) return;
+  _backendProductsFetchInFlight=true;
+  try{
+    var res=await fetch(BACKEND_BASE_URL+'/offline-products');
+    if(res.ok){
+      var data=await res.json();
+      if(Array.isArray(data)){
+        _backendProductsCache=data;
+        _categoryIndexCache=null; // rebuild index with backend products
+        if(categoriesPanelOpen && typeof renderCategoriesPanel==='function'){
+          renderCategoriesPanel();
+        }
+      }
+    }
+  }catch(e){ /* offline/unreachable */ }
+  _backendProductsFetchInFlight=false;
+}
 
 function buildCategoryIndex(){
-  // {catId: [{barcode,name,brand,score,grade}...]}
   if(_categoryIndexCache) return _categoryIndexCache;
   var index={};
+
+  // 1. Local CSV Database
   if(csvDBLoaded){
     Object.keys(csvDB).forEach(function(bc){
       var prod=csvDB[bc];
       var cat=detectCategory(prod.product_name||'');
       var norm=normBackend(prod), res=calculateScore(norm,'');
-      (index[cat]=index[cat]||[]).push({barcode:bc,name:prod.product_name,brand:prod.brand,score:res.score,grade:res.grade});
+      (index[cat]=index[cat]||[]).push({
+        barcode:bc,
+        name:prod.product_name,
+        brand:prod.brand,
+        score:res.score,
+        grade:res.grade,
+        source:'Swapify DB'
+      });
     });
   }
+
+  // 2. Backend SQLite Database (/offline-products)
+  if(!_backendProductsCache && !_backendProductsFetchInFlight){
+    fetchBackendProductsForCategories();
+  }
+  if(_backendProductsCache && Array.isArray(_backendProductsCache)){
+    _backendProductsCache.forEach(function(prod){
+      var bc=prod.barcode;
+      if(!bc) return;
+      var cat=detectCategory(prod.name||prod.product_name||'');
+      (index[cat]=index[cat]||[]);
+      if(!index[cat].some(function(i){ return i.barcode===bc; })){
+        index[cat].push({
+          barcode:bc,
+          name:prod.name||prod.product_name||'Unknown Product',
+          brand:prod.brand||'Swapify DB',
+          score:typeof prod.score==='number'?prod.score:5,
+          grade:prod.grade||'C',
+          source:'Swapify DB'
+        });
+      }
+    });
+  }
+
+  // 3. User History & Global Database items
   var h=loadHistory();
   h.forEach(function(item){
     var cat=detectCategory(item.name||'');
     if(!index[cat]) index[cat]=[];
     if(!index[cat].some(function(i){return i.barcode===item.barcode;})){
-      index[cat].push({barcode:item.barcode,name:item.name,brand:item.brand||'Global DB',score:item.score,grade:item.grade||'C'});
+      index[cat].push({
+        barcode:item.barcode,
+        name:item.name||'Unknown Product',
+        brand:item.brand||'Global DB',
+        score:item.score,
+        grade:item.grade||'C',
+        source:'Global DB'
+      });
     }
   });
+
   _categoryIndexCache=index;
   return index;
 }
@@ -5006,11 +5067,10 @@ function renderCategoriesPanel(){
     renderCategoryDetailView(_currentCategoryView);
     return;
   }
-  if(!csvDBLoaded){
-    _setCategoriesHTML('<div class="cat-section"><div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category</div></div><div class="cat-empty">Loading product database…</div></div>');
-    return;
-  }
   var index=buildCategoryIndex();
+  var totalAllProducts=0;
+  Object.keys(index).forEach(function(k){ totalAllProducts+=index[k].length; });
+
   var cardsHTML=Object.keys(CATEGORY_META).map(function(catId){
     var meta=CATEGORY_META[catId];
     var items=index[catId]||[];
@@ -5021,9 +5081,10 @@ function renderCategoriesPanel(){
       +'<div class="cat-card-count">'+items.length+' product'+(items.length>1?'s':'')+'</div>'
       +'</div>';
   }).join('');
+
   _setCategoriesHTML('<div class="cat-section">'
-    +'<div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category</div></div>'
-    +'<div class="cat-grid">'+(cardsHTML||'<div class="cat-empty">No categorized products found.</div>')+'</div>'
+    +'<div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category <span style="font-family:\'DM Mono\',monospace;font-size:0.75rem;color:var(--text-muted);font-weight:400;margin-left:8px;">('+totalAllProducts+' total products)</span></div></div>'
+    +'<div class="cat-grid">'+(cardsHTML||'<div class="cat-empty">Loading product categories…</div>')+'</div>'
     +'</div>');
 }
 
@@ -5036,25 +5097,43 @@ function backToCategoriesGrid(){
   renderCategoriesPanel();
 }
 
+var _catFilterQuery='';
+function filterCategoryProducts(query){
+  _catFilterQuery=(query||'').toLowerCase().trim();
+  if(_currentCategoryView) renderCategoryDetailView(_currentCategoryView);
+}
+
 function renderCategoryDetailView(catId){
   var meta=CATEGORY_META[catId]||{label:catId,icon:'\uD83D\uDCE6'};
   var index=buildCategoryIndex();
   var items=(index[catId]||[]).slice().sort(function(a,b){return b.score-a.score;});
+
+  if(_catFilterQuery){
+    items=items.filter(function(item){
+      return (item.name||'').toLowerCase().indexOf(_catFilterQuery)!==-1 ||
+             (item.brand||'').toLowerCase().indexOf(_catFilterQuery)!==-1 ||
+             (item.barcode||'').indexOf(_catFilterQuery)!==-1;
+    });
+  }
+
   var listHTML=items.length
     ? items.map(function(item,i){
         var gc=item.score>=9?'score-a':item.score>=7?'score-b':item.score>=5?'score-c':item.score>=3?'score-d':'score-f';
         var catBadgeHTML=buildBetterForYouBadgeHTML(item.score>7,'better-for-you-badge-list');
+        var srcBadge=item.source?'<span class="source-badge" style="font-size:0.65rem;padding:2px 6px;margin-left:6px;">'+item.source+'</span>':'';
         return '<div class="cat-product-item" onclick="quickScan(\''+item.barcode+'\')">'
           +'<div class="cat-product-rank">#'+(i+1)+'</div>'
           +'<div class="cat-product-score '+gc+'">'+item.grade+'</div>'
-          +'<div class="cat-product-info"><div class="cat-product-name">'+(item.name||'Unknown')+'</div><div class="cat-product-brand">'+(item.brand||'')+' \u00b7 '+item.score+'/10</div></div>'
+          +'<div class="cat-product-info"><div class="cat-product-name">'+(item.name||'Unknown')+' '+srcBadge+'</div><div class="cat-product-brand">'+(item.brand||'')+' \u00b7 '+item.score+'/10</div></div>'
           +catBadgeHTML
           +'</div>';
       }).join('')
-    : '<div class="cat-empty">No products found in this category.</div>';
+    : '<div class="cat-empty">No products found matching "'+_catFilterQuery+'" in '+meta.label+'.</div>';
+
   _setCategoriesHTML('<div class="cat-section">'
     +'<button class="btn-cat-back" onclick="backToCategoriesGrid()">\u2190 All Categories</button>'
-    +'<div class="cat-header-row"><div class="cat-title">'+meta.icon+' '+meta.label+' <span style="font-family:\'DM Mono\',monospace;font-size:0.68rem;color:var(--text-muted);font-weight:400;">(top rated first)</span></div></div>'
+    +'<div class="cat-header-row" style="margin-top:12px;margin-bottom:12px;"><div class="cat-title">'+meta.icon+' '+meta.label+' <span style="font-family:\'DM Mono\',monospace;font-size:0.72rem;color:var(--text-muted);font-weight:400;">('+items.length+' products loaded)</span></div></div>'
+    +'<div class="input-wrap" style="margin-bottom:14px;"><input type="text" placeholder="🔍 Search/filter '+meta.label+'..." value="'+_catFilterQuery+'" oninput="filterCategoryProducts(this.value)" autocomplete="off"></div>'
     +'<div class="cat-product-list">'+listHTML+'</div>'
     +'</div>');
 }
