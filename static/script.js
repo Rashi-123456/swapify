@@ -4973,6 +4973,7 @@ var CATEGORY_META={
 };
 var categoriesPanelOpen=false;
 var _currentCategoryView=null; // null = grid view, or a category id
+var _categoryIndexCache=null; // must be declared, not just assigned — buildCategoryIndex() reads it before any assignment runs
 
 function _setCategoriesHTML(html){
   var panel=document.getElementById('categoriesPanel');
