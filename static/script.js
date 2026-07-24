@@ -1282,6 +1282,8 @@ function csvStr(v){ return(!v||v==='')?'Unknown':v.trim(); }
     }
     if(csvCount===0){csvStatEl.className='db-status db-error';csvStatEl.innerHTML='✗ 0 products loaded.';return;}
     csvDBLoaded=true;
+    _categoryIndexCache=null;
+    if(categoriesPanelOpen && typeof renderCategoriesPanel==='function') renderCategoriesPanel();
     if(csvCount<50){csvStatEl.className='db-status db-warn';csvStatEl.innerHTML='⚠ Only <strong>'+csvCount+' products</strong> loaded'+(skipped>0?' ('+skipped+' rows skipped)':'');}
     else{csvStatEl.className='db-status db-loaded';csvStatEl.textContent='✓ Product DB: '+csvCount+' products loaded';}
   }catch(e){csvStatEl.className='db-status db-error';csvStatEl.innerHTML='✗ CSV not found. Place <code>'+CSV_FILE+'</code> in same folder.';}
@@ -4998,11 +5000,12 @@ async function fetchBackendProductsForCategories(){
 }
 
 function buildCategoryIndex(){
-  if(_categoryIndexCache) return _categoryIndexCache;
+  if(_categoryIndexCache && Object.keys(_categoryIndexCache).length > 0) return _categoryIndexCache;
   var index={};
+  var totalFound = 0;
 
   // 1. Local CSV Database
-  if(csvDBLoaded){
+  if(csvDBLoaded && typeof csvDB==='object'){
     Object.keys(csvDB).forEach(function(bc){
       var prod=csvDB[bc];
       var cat=detectCategory(prod.product_name||prod.name||'');
@@ -5016,6 +5019,7 @@ function buildCategoryIndex(){
         grade:gradeVal,
         source:'Swapify DB'
       });
+      totalFound++;
     });
   }
 
@@ -5038,28 +5042,34 @@ function buildCategoryIndex(){
           grade:prod.grade||'C',
           source:'Swapify DB'
         });
+        totalFound++;
       }
     });
   }
 
   // 3. User History & Global Database items
   var h=loadHistory();
-  h.forEach(function(item){
-    var cat=detectCategory(item.name||'');
-    if(!index[cat]) index[cat]=[];
-    if(!index[cat].some(function(i){return i.barcode===item.barcode;})){
-      index[cat].push({
-        barcode:item.barcode,
-        name:item.name||'Unknown Product',
-        brand:item.brand||'Global DB',
-        score:item.score,
-        grade:item.grade||'C',
-        source:'Global DB'
-      });
-    }
-  });
+  if(Array.isArray(h)){
+    h.forEach(function(item){
+      var cat=detectCategory(item.name||'');
+      if(!index[cat]) index[cat]=[];
+      if(!index[cat].some(function(i){return i.barcode===item.barcode;})){
+        index[cat].push({
+          barcode:item.barcode,
+          name:item.name||'Unknown Product',
+          brand:item.brand||'Global DB',
+          score:item.score,
+          grade:item.grade||'C',
+          source:'Global DB'
+        });
+        totalFound++;
+      }
+    });
+  }
 
-  _categoryIndexCache=index;
+  if(totalFound > 0){
+    _categoryIndexCache=index;
+  }
   return index;
 }
 
@@ -5071,6 +5081,14 @@ function renderCategoriesPanel(){
   var index=buildCategoryIndex();
   var totalAllProducts=0;
   Object.keys(index).forEach(function(k){ totalAllProducts+=index[k].length; });
+
+  if(totalAllProducts===0){
+    _setCategoriesHTML('<div class="cat-section">'
+      +'<div class="cat-header-row"><div class="cat-title">📁 Browse by Category</div></div>'
+      +'<div class="cat-empty" style="padding:32px;text-align:center;"><div style="font-size:1.8rem;margin-bottom:8px;">⏳</div>Loading product database…</div>'
+      +'</div>');
+    return;
+  }
 
   var cardsHTML=Object.keys(CATEGORY_META).map(function(catId){
     var meta=CATEGORY_META[catId];
@@ -5084,8 +5102,8 @@ function renderCategoriesPanel(){
   }).join('');
 
   _setCategoriesHTML('<div class="cat-section">'
-    +'<div class="cat-header-row"><div class="cat-title">\uD83D\uDDC2\uFE0F Browse by Category <span style="font-family:\'DM Mono\',monospace;font-size:0.75rem;color:var(--text-muted);font-weight:400;margin-left:8px;">('+totalAllProducts+' total products)</span></div></div>'
-    +'<div class="cat-grid">'+(cardsHTML||'<div class="cat-empty">Loading product categories…</div>')+'</div>'
+    +'<div class="cat-header-row"><div class="cat-title">📁 Browse by Category <span style="font-family:\'DM Mono\',monospace;font-size:0.75rem;color:var(--text-muted);font-weight:400;margin-left:8px;">('+totalAllProducts+' total products)</span></div></div>'
+    +'<div class="cat-grid">'+cardsHTML+'</div>'
     +'</div>');
 }
 
