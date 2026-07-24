@@ -4624,6 +4624,7 @@ function dashScoreClass(score){ return score>=9?'score-a':score>=7?'score-b':sco
 function dashQuickActionsHTML(){
   return '<div class="dash-quick-actions">'
     +'<div class="dash-quick-btn" onclick="dashGoScan()"><span class="dash-quick-icon">\uD83D\uDCF7</span>Scan</div>'
+    +'<div class="dash-quick-btn" onclick="showPage(\'categories\')"><span class="dash-quick-icon">\uD83D\uDCC1</span>Categories</div>'
     +'<div class="dash-quick-btn" onclick="openMultiComparePanel()"><span class="dash-quick-icon">\u2696\uFE0F</span>Compare</div>'
     +'<div class="dash-quick-btn" onclick="openProfilePanel()"><span class="dash-quick-icon">\uD83D\uDCDC</span>History</div>'
     +'<div class="dash-quick-btn" onclick="openMySwapsPanel()"><span class="dash-quick-icon">\uD83D\uDECD\uFE0F</span>My Swaps</div>'
@@ -4632,6 +4633,27 @@ function dashQuickActionsHTML(){
 function dashGoScan(){
   document.querySelector('.card').scrollIntoView({behavior:'smooth',block:'start'});
   setTimeout(function(){var i=document.getElementById('barcodeInput');if(i)i.focus();},350);
+}
+
+function renderHomeCategoriesPreviewHTML(){
+  var index=buildCategoryIndex();
+  var catKeys=Object.keys(index);
+  if(!catKeys.length) return '';
+  var displayMeta=Object.assign({}, CATEGORY_META);
+  var previewHTML=catKeys.slice(0, 6).map(function(catId){
+    var meta=displayMeta[catId]||{label:catId.replace(/_/g,' ').replace(/\b\w/g,function(l){return l.toUpperCase();}),icon:'📦'};
+    var items=index[catId]||[];
+    return '<div class="cat-card" onclick="showPage(\'categories\');setTimeout(function(){openCategoryDetail(\''+catId+'\');},50);" style="padding:12px 8px;">'
+      +'<div class="cat-card-icon" style="font-size:1.4rem;margin-bottom:4px;">'+meta.icon+'</div>'
+      +'<div class="cat-card-name" style="font-size:0.75rem;">'+meta.label+'</div>'
+      +'<div class="cat-card-count" style="font-size:0.6rem;">'+items.length+' products</div>'
+      +'</div>';
+  }).join('');
+
+  return '<div class="dash-block">'
+    +'<div class="dash-block-header"><div class="dash-block-title">\uD83D\uDCC1 Product Categories</div><button class="dash-view-all-btn" onclick="showPage(\'categories\')" style="background:none;border:none;color:var(--accent);font-family:\'DM Mono\',monospace;font-size:0.75rem;cursor:pointer;">View All ('+catKeys.length+') \u2192</button></div>'
+    +'<div class="cat-grid" style="grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;">'+previewHTML+'</div>'
+    +'</div>';
 }
 
 // Assumed contract (Dhruv, app.py) — not yet confirmed against his real
