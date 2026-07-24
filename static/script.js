@@ -647,8 +647,14 @@ function _renderWeeklyPanelCore(stats){
    ══════════════════════════════════════════════════════ */
 var AUTH_KEY='swapify-auth-v1';
 var currentUser=null;
-function loadAuth(){ try{currentUser=JSON.parse(localStorage.getItem(AUTH_KEY)||'null');}catch(e){currentUser=null;} renderHeaderAuth(); }
-function saveAuth(user){ currentUser=user; localStorage.setItem(AUTH_KEY,JSON.stringify(user)); renderHeaderAuth(); }
+function loadAuth(){ 
+  try{currentUser=JSON.parse(localStorage.getItem(AUTH_KEY)||'null');}catch(e){currentUser=null;} 
+  renderHeaderAuth(); 
+  if(currentUser&&currentUser.token&&!currentUser.localOnly){
+    setTimeout(function(){ importLocalScanHistory(true); }, 500);
+  }
+}
+function saveAuth(user){ currentUser=user; localStorage.setItem(AUTH_KEY,JSON.stringify(user)); renderHeaderAuth(); if(user&&user.token&&!user.localOnly) setTimeout(function(){ importLocalScanHistory(true); }, 500); }
 function clearAuth(){ currentUser=null; localStorage.removeItem(AUTH_KEY); renderHeaderAuth(); }
 
 // Call this right after any authenticated fetch(). Returns true if the
@@ -3311,16 +3317,27 @@ async function fetchMonthlyReportFromBackend(offset){
 }
 
 function calcMonthlyStats(offset){
-  if(_monthlyBackendCache.hasOwnProperty(offset)) return _monthlyBackendCache[offset];
+  var bounds=monthBounds(offset);
+  var localH=loadHistory().filter(function(item){
+    var t=new Date(item.timestamp).getTime();
+    return t>=bounds.first.getTime()&&t<=bounds.last.getTime();
+  });
+  if(_monthlyBackendCache.hasOwnProperty(offset)) {
+    var cached=_monthlyBackendCache[offset];
+    if(localH.length > cached.total) {
+      cached.total = Math.max(cached.total, localH.length);
+      localH.forEach(function(item){
+        var cat=detectCategory(item.name||'');
+        cached.catCounts[cat]=(cached.catCounts[cat]||0)+1;
+      });
+    }
+    return cached;
+  }
   if(currentUser&&currentUser.token&&!currentUser.localOnly&&!_monthlyBackendFetchInFlight[offset]){
     _monthlyBackendFetchInFlight[offset]=true;
     fetchMonthlyReportFromBackend(offset);
   }
-  var bounds=monthBounds(offset);
-  var h=loadHistory().filter(function(item){
-    var t=new Date(item.timestamp).getTime();
-    return t>=bounds.first.getTime()&&t<=bounds.last.getTime();
-  });
+  var h=localH;
   var total=h.length;
   var avg=total?Math.round(h.reduce(function(s,i){return s+i.score;},0)/total*10)/10:null;
   var best=null,worst=null;
@@ -3597,12 +3614,15 @@ function calcBadgeProgress(){
   if(isReallyLoggedIn()&&!_backendBadgeCache&&!_backendBadgeFetchInFlight) syncBadgesFromBackend();
   BADGE_DEFS.forEach(function(def){
     var earned,progressVal,pct;
+    var val=def.metric(h);
+    var localEarned=val>=def.target;
     if(useBackend&&_backendBadgeCache[def.id]){
       var b=_backendBadgeCache[def.id];
-      earned=b.earned; progressVal=b.progress; pct=b.pct;
+      earned=b.earned || localEarned;
+      progressVal=earned ? def.target : Math.max(b.progress, Math.min(val, def.target));
+      pct=earned ? 100 : Math.min(100, Math.round(progressVal/def.target*100));
     } else {
-      var val=def.metric(h);
-      earned=val>=def.target;
+      earned=localEarned;
       progressVal=Math.min(val,def.target);
       pct=Math.min(100,Math.round(val/def.target*100));
     }
