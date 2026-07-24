@@ -4922,24 +4922,36 @@ function checkDailyGoalMilestone(isComplete){
    ══════════════════════════════════════════════════════ */
 var CATEGORY_META={
   beverage:{label:'Beverages',icon:'\uD83E\uDD64'},
-  chocolate:{label:'Chocolate',icon:'\uD83C\uDF6B'},
+  soft_drink:{label:'Soft Drinks',icon:'\uD83E\uDD64'},
+  juice:{label:'Juices & Cold Drinks',icon:'\uD83E\uDD83'},
+  dairy_drink:{label:'Milk & Dairy Drinks',icon:'\uD83E\uDD5B'},
+  milkshake:{label:'Milkshakes',icon:'\uD83E\uDD64'},
+  health_drink:{label:'Health Drinks',icon:'\u2615'},
+  energy_drink:{label:'Energy Drinks',icon:'\u26A1'},
+  coffee:{label:'Coffee & Tea',icon:'\u2615'},
+  chocolate:{label:'Chocolates & Sweets',icon:'\uD83C\uDF6B'},
   protein_bar:{label:'Protein Bars',icon:'\uD83D\uDCAA'},
-  biscuit:{label:'Biscuits',icon:'\uD83C\uDF6A'},
+  biscuit:{label:'Biscuits & Cookies',icon:'\uD83C\uDF6A'},
+  cake:{label:'Cakes & Bakery',icon:'\uD83C\uDF70'},
   chips:{label:'Chips & Namkeen',icon:'\uD83E\uDD54'},
-  cereal:{label:'Cereals & Oats',icon:'\uD83E\uDD63'},
-  ice_cream:{label:'Ice Cream',icon:'\uD83C\uDF66'},
+  cereal:{label:'Cereals & Breakfast',icon:'\uD83E\uDD63'},
+  muesli:{label:'Muesli & Granola',icon:'\uD83E\uDD63'},
+  oats:{label:'Oats',icon:'\uD83C\uDF3E'},
+  ice_cream:{label:'Ice Cream & Kulfi',icon:'\uD83C\uDF66'},
   instant:{label:'Instant Food',icon:'\uD83C\uDF5C'},
-  spread:{label:'Spreads',icon:'\uD83E\uDD5C'},
-  supplement:{label:'Supplements',icon:'\uD83D\uDC8A'},
-  other:{label:'Other',icon:'\uD83D\uDCE6'}
+  noodles:{label:'Noodles & Pasta',icon:'\uD83C\uDF5C'},
+  ready_to_eat:{label:'Ready to Eat Meals',icon:'\uD83C\uDF71'},
+  spread:{label:'Spreads & Jams',icon:'\uD83E\uDD5C'},
+  sauce:{label:'Sauces & Dips',icon:'\uD83E\uDD6B'},
+  supplement:{label:'Supplements & Wellness',icon:'\uD83D\uDC8A'},
+  yogurt:{label:'Yogurt & Curd',icon:'\uD83C\uDF68'},
+  nut_mix:{label:'Nuts & Seeds',icon:'\uD83E\uDD5C'},
+  pancake:{label:'Pancakes & Mixes',icon:'\uD83E\uDD5E'},
+  other:{label:'Other Groceries',icon:'\uD83D\uDCE6'}
 };
 var categoriesPanelOpen=false;
 var _currentCategoryView=null; // null = grid view, or a category id
 
-// Renders into BOTH the hidden #categoriesPanel (source template) and the
-// visible #categoriesPanelPage (what showPage('categories') actually shows).
-// Fixes the bug where clicking a subcategory updated only the hidden panel,
-// so the product list never appeared until the header nav was clicked again.
 function _setCategoriesHTML(html){
   var panel=document.getElementById('categoriesPanel');
   var page=document.getElementById('categoriesPanelPage');
@@ -5009,7 +5021,8 @@ function buildCategoryIndex(){
   if(csvDBLoaded && typeof csvDB==='object'){
     Object.keys(csvDB).forEach(function(bc){
       var prod=csvDB[bc];
-      var cat=detectCategory(prod.product_name||prod.name||'');
+      var cat=prod.category||detectCategory(prod.product_name||prod.name||'');
+      cat=(cat||'other').trim().toLowerCase();
       var scoreVal=typeof prod.score==='number'?prod.score:5;
       var gradeVal=prod.grade||(scoreVal>=7?'B':scoreVal>=5?'C':'D');
       (index[cat]=index[cat]||[]).push({
@@ -5032,7 +5045,8 @@ function buildCategoryIndex(){
     _backendProductsCache.forEach(function(prod){
       var bc=prod.barcode;
       if(!bc) return;
-      var cat=detectCategory(prod.name||prod.product_name||'');
+      var cat=prod.category||detectCategory(prod.name||prod.product_name||'');
+      cat=(cat||'other').trim().toLowerCase();
       (index[cat]=index[cat]||[]);
       if(!index[cat].some(function(i){ return i.barcode===bc; })){
         index[cat].push({
@@ -5052,7 +5066,8 @@ function buildCategoryIndex(){
   var h=loadHistory();
   if(Array.isArray(h)){
     h.forEach(function(item){
-      var cat=detectCategory(item.name||'');
+      var cat=item.category||detectCategory(item.name||'');
+      cat=(cat||'other').trim().toLowerCase();
       if(!index[cat]) index[cat]=[];
       if(!index[cat].some(function(i){return i.barcode===item.barcode;})){
         index[cat].push({
@@ -5091,8 +5106,16 @@ function renderCategoriesPanel(){
     return;
   }
 
-  var cardsHTML=Object.keys(CATEGORY_META).map(function(catId){
-    var meta=CATEGORY_META[catId];
+  var displayMeta=Object.assign({}, CATEGORY_META);
+  Object.keys(index).forEach(function(catId){
+    if(!displayMeta[catId]){
+      var label=catId.replace(/_/g,' ').replace(/\b\w/g,function(l){return l.toUpperCase();});
+      displayMeta[catId]={label:label,icon:'📦'};
+    }
+  });
+
+  var cardsHTML=Object.keys(displayMeta).map(function(catId){
+    var meta=displayMeta[catId];
     var items=index[catId]||[];
     if(!items.length) return '';
     return '<div class="cat-card" onclick="openCategoryDetail(\''+catId+'\')">'
@@ -5104,7 +5127,7 @@ function renderCategoriesPanel(){
 
   _setCategoriesHTML('<div class="cat-section">'
     +'<div class="cat-header-row"><div class="cat-title">📁 Browse by Category <span style="font-family:\'DM Mono\',monospace;font-size:0.75rem;color:var(--text-muted);font-weight:400;margin-left:8px;">('+totalAllProducts+' total products)</span></div></div>'
-    +'<div class="cat-grid">'+cardsHTML+'</div>'
+    +'<div class="cat-grid">'+(cardsHTML||'<div class="cat-empty">No categorized products found.</div>')+'</div>'
     +'</div>');
 }
 

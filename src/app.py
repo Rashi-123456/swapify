@@ -3399,6 +3399,7 @@ def get_offline_products():
             "barcode": p_dict.get("barcode"),
             "name": p_dict.get("product_name"),
             "brand": p_dict.get("brand"),
+            "category": p_dict.get("category"),
             "nutrition": {
                 "sugar": p_dict.get("sugar_g_per_serving"),
                 "saturated_fat": p_dict.get("saturated_fat_g_per_serving"),
