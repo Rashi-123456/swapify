@@ -2983,28 +2983,21 @@ def get_compare_list(user_id: int = Depends(get_current_user)):
 
 
 @app.get("/weekly-summary")
-def get_weekly_summary(user_id: int = Depends(get_current_user)):
+def get_weekly_summary(offset: int = 0, user_id: int = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    seven_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+    abs_offset = abs(offset)
+    end_time = datetime.datetime.utcnow() - datetime.timedelta(days=7 * abs_offset)
+    start_time = end_time - datetime.timedelta(days=7)
 
-    # LEFT JOIN, not JOIN: a scanned barcode may belong to a product that only
-    # lives in the bundled CSV database or Open Food Facts and was never
-    # written to our own `products` table — in that case p.* comes back
-    # all-NULL here. The previous INNER JOIN silently dropped those rows from
-    # the result set entirely, which is why "Total Scans" could stay flat
-    # even while the user kept scanning things. Every scan_history row now
-    # counts toward total_scans regardless; only the score-based aggregates
-    # (which need product nutrition data to compute) are drawn from the
-    # subset that has a matching product row.
     cursor.execute('''
         SELECT h.scanned_at, p.* 
         FROM scan_history h 
         LEFT JOIN products p ON h.barcode = p.barcode 
-        WHERE h.user_id = ? AND h.scanned_at >= ?
+        WHERE h.user_id = ? AND h.scanned_at >= ? AND h.scanned_at <= ?
         ORDER BY h.scanned_at ASC
-    ''', (user_id, seven_days_ago.strftime('%Y-%m-%d %H:%M:%S')))
+    ''', (user_id, start_time.strftime('%Y-%m-%d %H:%M:%S'), end_time.strftime('%Y-%m-%d %H:%M:%S')))
 
     rows = cursor.fetchall()
     conn.close()
@@ -3018,8 +3011,6 @@ def get_weekly_summary(user_id: int = Depends(get_current_user)):
     for row in rows:
         p_dict = dict(row)
         if p_dict.get('barcode') is None:
-            # No matching product row — still a real, counted scan, just
-            # without nutrition data to score.
             continue
         score, _, _, _ = calculate_health_score_v2(p_dict, 1, preferences)
         total_score += score
@@ -3042,7 +3033,8 @@ def get_weekly_summary(user_id: int = Depends(get_current_user)):
     return {
         "total_scans": total_scans,
         "average_score": round(avg_score, 2),
-        "daily_trends": daily_trends
+        "daily_trends": daily_trends,
+        "offset": offset
     }
 
 

@@ -497,82 +497,96 @@ function clearAllFavorites(){
    WEEKLY HEALTH FLOWCHART
    ══════════════════════════════════════════════════════ */
 var weeklyPanelOpen=false;
+var weeklyOffset=0; // 0 = current week, -1 = last week, etc.
 
 function toggleWeeklyPanel(){
   weeklyPanelOpen=!weeklyPanelOpen;
   var panel=document.getElementById('weeklyPanel');
-  if(weeklyPanelOpen){ renderWeeklyPanel(); panel.style.display=''; }
+  if(weeklyPanelOpen){ weeklyOffset=0; renderWeeklyPanel(); panel.style.display=''; }
   else panel.style.display='none';
+}
+
+function navWeekly(delta){
+  weeklyOffset+=delta;
+  if(weeklyOffset>0) weeklyOffset=0;
+  renderWeeklyPanel();
 }
 
 function renderWeeklyPanel(){
   _renderWeeklyPanelCore(calcDashboardStats());
-  // If logged in with a real (non-local-only) account, the backend's own
-  // /weekly-summary — built from scan_history, which every authenticated
-  // scan already writes to — is the account's true cross-device weekly
-  // data. Re-render with it once it arrives so this panel matches no
-  // matter which browser/device the person is on, instead of only ever
-  // reflecting this browser's localStorage.
   if(currentUser&&currentUser.token&&!currentUser.localOnly){
     fetchWeeklySummaryFromBackend();
   }
 }
+
 var WEEKLY_SUMMARY_URL=BACKEND_BASE_URL+'/weekly-summary';
 async function fetchWeeklySummaryFromBackend(){
   try{
-    var res=await fetch(WEEKLY_SUMMARY_URL,{headers:getAuthHeaders()});
+    var res=await fetch(WEEKLY_SUMMARY_URL+'?offset='+weeklyOffset,{headers:getAuthHeaders()});
     if(!res.ok){ handleAuthExpiry(res); return; }
     var data=await res.json();
-    // Translate the backend's {date, average_score} daily_trends into the
-    // same {score, timestamp} shape calcDashboardStats().history already
-    // uses, so _renderWeeklyPanelCore's chart-building code runs completely
-    // unchanged regardless of which source the data came from.
     var synthHistory=(data.daily_trends||[]).map(function(d){
       return{score:d.average_score,timestamp:new Date(d.date+'T12:00:00').getTime()};
     });
-    _renderWeeklyPanelCore({total:data.total_scans||0,history:synthHistory});
+    // Merge backend history with local history so cross-device scans both show
+    var localH=loadHistory();
+    var combinedHistory=localH.concat(synthHistory);
+    _renderWeeklyPanelCore({total:data.total_scans||0,history:combinedHistory});
     var wpSrc=document.getElementById('weeklyPanel'), wpDst=document.getElementById('weeklyPanelPage');
     if(wpSrc&&wpDst) wpDst.innerHTML=wpSrc.innerHTML;
-  }catch(e){ /* offline/unreachable backend — the local render already stands */ }
+  }catch(e){ /* offline/unreachable backend — local render stands */ }
 }
+
 function _renderWeeklyPanelCore(stats){
   var panel=document.getElementById('weeklyPanel');
 
-  if(stats.total===0){
-    panel.innerHTML='<div class="weekly-section"><div class="weekly-header"><div class="weekly-title">📊 Weekly Health Summary</div></div><div class="weekly-empty">No scans yet. Start scanning products to see your health trends here!</div></div>';
-    return;
-  }
-
-  // Build last 7 days data
+  // Build the 7 days for the selected week
   var today=new Date(); today.setHours(0,0,0,0);
+  var weekEnd=new Date(today.getTime()+weeklyOffset*7*86400000);
   var days=[];
   for(var i=6;i>=0;i--){
-    var d=new Date(today.getTime()-i*86400000);
-    days.push({date:d,label:d.toLocaleDateString('en-IN',{weekday:'short'}),scans:[],avg:null});
+    var d=new Date(weekEnd.getTime()-i*86400000);
+    days.push({date:d,label:d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}),scans:[],avg:null});
   }
-  stats.history.forEach(function(item){
-    var d=new Date(item.timestamp); d.setHours(0,0,0,0);
-    var dt=d.getTime();
-    var dayObj=days.find(function(x){ return x.date.getTime()===dt; });
-    if(dayObj) dayObj.scans.push(item.score);
+
+  var weekStartMs=days[0].date.getTime();
+  var weekEndMs=days[6].date.getTime()+86399999;
+
+  var totalScansInWindow=0;
+  (stats.history||[]).forEach(function(item){
+    var itemDate=new Date(item.timestamp); itemDate.setHours(0,0,0,0);
+    var itemMs=itemDate.getTime();
+    if(itemMs>=weekStartMs && itemMs<=weekEndMs){
+      totalScansInWindow++;
+      var dayObj=days.find(function(x){ return x.date.getTime()===itemMs; });
+      if(dayObj) dayObj.scans.push(item.score);
+    }
   });
+
   days.forEach(function(d){
     if(d.scans.length) d.avg=Math.round(d.scans.reduce(function(a,b){return a+b;},0)/d.scans.length*10)/10;
   });
 
-  // Stats
-  // Total scans this week comes from stats.total, not from summing the chart
-  // buckets below: the backend path (fetchWeeklySummaryFromBackend) only
-  // ever has ONE synthesized point per day (that day's average score, not
-  // one entry per scan) so counting chart entries undercounted any day with
-  // more than one real scan — 5 scans in a day rendered as "1" here even
-  // though the correct total was already sitting right there in stats.total.
-  var scansThisWeek=stats.total;
+  var canGoNext=weeklyOffset<0;
+  var weekPeriodLabel=days[0].label+' – '+days[6].label;
+
+  var navHTML='<div class="monthly-month-nav">'
+    +'<button class="month-nav-btn" onclick="navWeekly(-1)" title="Previous week">‹</button>'
+    +'<span class="monthly-month-label" style="min-width:130px;">'+weekPeriodLabel+'</span>'
+    +'<button class="month-nav-btn" onclick="navWeekly(1)" '+(canGoNext?'':'disabled')+' title="Next week">›</button>'
+    +'</div>';
+
+  if(totalScansInWindow===0 && (!stats.history || !stats.history.length)){
+    panel.innerHTML='<div class="weekly-section"><div class="weekly-header"><div class="weekly-title">📊 Weekly Health Summary</div>'+navHTML+'</div><div class="weekly-empty">No scans recorded for '+weekPeriodLabel+'. Scan some products to build this week\'s report!</div></div>';
+    return;
+  }
+
+  var scansThisWeek=totalScansInWindow||stats.total;
   var avgScores=days.filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
   var weekAvg=avgScores.length?Math.round(avgScores.reduce(function(a,b){return a+b;},0)/avgScores.length*10)/10:null;
   var bestDay=days.reduce(function(best,d){return(d.avg!==null&&(best.avg===null||d.avg>best.avg))?d:best;},{avg:null});
 
-  // Trend: compare first half vs second half
+  // Trend: compare first half vs second half of week
   var firstHalf=days.slice(0,3).filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
   var secondHalf=days.slice(4,7).filter(function(d){return d.avg!==null;}).map(function(d){return d.avg;});
   var firstAvg=firstHalf.length?firstHalf.reduce(function(a,b){return a+b;},0)/firstHalf.length:null;
@@ -580,7 +594,7 @@ function _renderWeeklyPanelCore(stats){
   var trendHTML='';
   if(firstAvg!==null&&secondAvg!==null){
     var diff=Math.round((secondAvg-firstAvg)*10)/10;
-    if(diff>0.3) trendHTML='<div class="weekly-trend"><div class="trend-icon">📈</div><div class="trend-text">Your scores are <strong>improving</strong> this week (+'+diff+' pts vs last 3 days). Keep going!</div></div>';
+    if(diff>0.3) trendHTML='<div class="weekly-trend"><div class="trend-icon">📈</div><div class="trend-text">Your scores are <strong>improving</strong> this week (+'+diff+' pts). Keep going!</div></div>';
     else if(diff<-0.3) trendHTML='<div class="weekly-trend"><div class="trend-icon">📉</div><div class="trend-text">Scores have <strong>dipped</strong> lately ('+diff+' pts). Try swapping for higher-rated alternatives.</div></div>';
     else trendHTML='<div class="weekly-trend"><div class="trend-icon">➡️</div><div class="trend-text">Your scores are <strong>consistent</strong> this week. Staying steady!</div></div>';
   }
@@ -603,17 +617,16 @@ function _renderWeeklyPanelCore(stats){
     }
     labelsHTML+='<text x="'+x+'" y="'+(svgH-6)+'" text-anchor="middle" font-size="9" fill="var(--gray)" font-family="DM Mono, monospace">'+day.label+'</text>';
   });
+
   // Line connecting bar tops
   var lineHTML='';
   if(points.length>=2){
     var pathD='M '+points[0].x+' '+points[0].y;
     for(var p=1;p<points.length;p++){
-      // Smooth bezier
       var cx=(points[p-1].x+points[p].x)/2;
       pathD+=' C '+cx+' '+points[p-1].y+' '+cx+' '+points[p].y+' '+points[p].x+' '+points[p].y;
     }
     lineHTML='<path d="'+pathD+'" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 2" opacity="0.6"/>';
-    // Dots
     points.forEach(function(pt){
       lineHTML+='<circle cx="'+pt.x+'" cy="'+pt.y+'" r="4" fill="var(--accent)" opacity="0.8"/>';
     });
@@ -627,7 +640,7 @@ function _renderWeeklyPanelCore(stats){
 
   var statClass=weekAvg===null?'':weekAvg>=7?'stat-good':weekAvg>=5?'stat-warn':'stat-bad';
   panel.innerHTML='<div class="weekly-section">'
-    +'<div class="weekly-header"><div class="weekly-title">📊 Weekly Health Summary</div><div class="weekly-period">Last 7 days</div></div>'
+    +'<div class="weekly-header"><div class="weekly-title">📊 Weekly Health Summary</div>'+navHTML+'</div>'
     +'<div class="weekly-stats-row">'
     +'<div class="weekly-stat"><div class="weekly-stat-num">'+scansThisWeek+'</div><div class="weekly-stat-lbl">Scans</div></div>'
     +'<div class="weekly-stat '+statClass+'"><div class="weekly-stat-num">'+(weekAvg!==null?weekAvg:'—')+'</div><div class="weekly-stat-lbl">Avg Score</div></div>'
@@ -640,6 +653,9 @@ function _renderWeeklyPanelCore(stats){
     +'</svg></div>'
     +trendHTML
     +'</div>';
+
+  var wpSrc=document.getElementById('weeklyPanel'), wpDst=document.getElementById('weeklyPanelPage');
+  if(wpSrc&&wpDst&&wpSrc!==wpDst) wpDst.innerHTML=wpSrc.innerHTML;
 }
 
 /* ══════════════════════════════════════════════════════
